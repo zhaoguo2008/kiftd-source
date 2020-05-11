@@ -35,6 +35,8 @@ public class LogUtil {
 	private NodeMapper fim;
 	@Resource
 	private IpAddrGetter idg;
+	@Resource
+	private FileBlockUtil fbu;
 
 	private ExecutorService writerThread;
 	private FileWriter writer;
@@ -69,7 +71,17 @@ public class LogUtil {
 	 */
 	public void writeException(Exception e) {
 		if (ConfigureReader.instance().inspectLogLevel(LogLevel.Runtime_Exception)) {
-			writeToLog("Exception", "[" + e + "]:" + e.getMessage());
+			StringBuffer exceptionInfo = new StringBuffer(e.toString());
+			StackTraceElement[] stes = e.getStackTrace();
+			for (int i = 0; i < stes.length && i < 10; i++) {
+				StackTraceElement ste = stes[i];
+				exceptionInfo.append("\r\n	at " + ste.getClassName() + "." + ste.getMethodName() + "("
+						+ ste.getFileName() + ":" + ste.getLineNumber() + ")");
+			}
+			if (stes.length > 10) {
+				exceptionInfo.append("\r\n......");
+			}
+			writeToLog("Exception", exceptionInfo.toString());
 		}
 	}
 
@@ -94,7 +106,7 @@ public class LogUtil {
 					pl = pl + i.getFolderName() + "/";
 				}
 				String content = ">IP [" + ip + "]\r\n>ACCOUNT [" + a + "]\r\n>OPERATE [Create new folder]\r\n>PATH ["
-						+ pl + "]\r\n>NAME [" + f.getFolderName() + "]，CONSTRAINT [" + f.getFolderConstraint() + "]";
+						+ pl + "]\r\n>NAME [" + f.getFolderName() + "],CONSTRAINT [" + f.getFolderConstraint() + "]";
 				writeToLog("Event", content);
 			});
 		}
@@ -121,7 +133,7 @@ public class LogUtil {
 					pl = pl + i.getFolderName() + "/";
 				}
 				String content = ">IP [" + ip + "]\r\n>ACCOUNT [" + a + "]\r\n>OPERATE [Edit folder]\r\n>PATH [" + pl
-						+ "]\r\n>NAME [" + f.getFolderName() + "]->[" + newName + "]，CONSTRAINT ["
+						+ "]\r\n>NAME [" + f.getFolderName() + "]->[" + newName + "],CONSTRAINT ["
 						+ f.getFolderConstraint() + "]->[" + newConstraint + "]";
 				writeToLog("Event", content);
 			});
@@ -218,14 +230,12 @@ public class LogUtil {
 	 * 写入下载文件信息
 	 * </p>
 	 */
-	public void writeDownloadFileEvent(HttpServletRequest request, Node f) {
+	public void writeDownloadFileEvent(String account, String ip, Node f) {
 		if (ConfigureReader.instance().inspectLogLevel(LogLevel.Event)) {
-			String account = (String) request.getSession().getAttribute("ACCOUNT");
 			if (account == null || account.length() == 0) {
 				account = "Anonymous";
 			}
 			String a = account;
-			String ip = idg.getIpAddr(request);
 			writerThread.execute(() -> {
 				Folder folder = fm.queryById(f.getFileParentFolder());
 				List<Folder> l = fu.getParentList(folder.getFolderId());
@@ -353,63 +363,73 @@ public class LogUtil {
 
 	/**
 	 * 
-	 * <h2>日志记录：移动文件</h2>
+	 * <h2>日志记录：移动/复制文件</h2>
 	 * <p>
-	 * 记录移动文件操作，谁、在什么时候、将哪个文件移动到哪。
+	 * 记录移动/复制文件操作，谁、在什么时候、将哪个文件移动/复制到哪。
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param request
-	 *            HttpServletRequest 请求对象
-	 * @param f
-	 *            Node 被移动的文件节点
-	 * @param locationpath
-	 *            String 被移动到的位置
+	 * @param account
+	 *            java.lang.String 操作者账户名
+	 * @param ip
+	 *            java.lang.String 操作者IP地址
+	 * @param finalPath
+	 *            java.lang.String 被操作后的节点完整路径
+	 * @param originPath
+	 *            java.lang.String 未操作前的节点完整路径
+	 * @param isCopy
+	 *            boolean 是否为复制模式
 	 */
-	public void writeMoveFileEvent(HttpServletRequest request, Node f) {
+	public void writeMoveFileEvent(String account, String ip, String originPath, String finalPath, boolean isCopy) {
 		if (ConfigureReader.instance().inspectLogLevel(LogLevel.Event)) {
-			String account = (String) request.getSession().getAttribute("ACCOUNT");
 			if (account == null || account.length() == 0) {
 				account = "Anonymous";
 			}
 			String a = account;
-			String ip = idg.getIpAddr(request);
 			writerThread.execute(() -> {
-				Folder folder = fm.queryById(f.getFileParentFolder());
-				List<Folder> l = fu.getParentList(folder.getFolderId());
-				String pl = new String();
-				for (Folder i : l) {
-					pl = pl + i.getFolderName() + "/";
-				}
-				String content = ">IP [" + ip + "]\r\n>ACCOUNT [" + a + "]\r\n>OPERATE [Move file]\r\n>NEW PATH [" + pl
-						+ folder.getFolderName() + "/" + f.getFileName() + "]";
+				String content = ">IP [" + ip + "]\r\n>ACCOUNT [" + a + "]\r\n>OPERATE ["
+						+ (isCopy ? "Copy file" : "Move file") + "]\r\n>FROM [" + originPath + "]\r\n>TO   ["
+						+ finalPath + "]";
 				writeToLog("Event", content);
 			});
 		}
 	}
 
-	public void writeMoveFileEvent(HttpServletRequest request, Folder f) {
+	/**
+	 * 
+	 * <h2>日志记录：移动/复制文件夹</h2>
+	 * <p>
+	 * 记录移动/复制文件夹操作，谁、在什么时候、将哪个文件夹移动/复制到哪。
+	 * </p>
+	 * 
+	 * @author 青阳龙野(kohgylw)
+	 * @param account
+	 *            java.lang.String 操作者账户名
+	 * @param ip
+	 *            java.lang.String 操作者IP地址
+	 * @param finalPath
+	 *            java.lang.String 被操作后的文件夹完整路径
+	 * @param originPath
+	 *            java.lang.String 未操作前的文件夹完整路径
+	 * @param isCopy
+	 *            boolean 是否为复制模式
+	 */
+	public void writeMoveFolderEvent(String account, String ip, String originPath, String finalPath, boolean isCopy) {
 		if (ConfigureReader.instance().inspectLogLevel(LogLevel.Event)) {
-			String account = (String) request.getSession().getAttribute("ACCOUNT");
 			if (account == null || account.length() == 0) {
 				account = "Anonymous";
 			}
 			String a = account;
-			String ip = idg.getIpAddr(request);
 			writerThread.execute(() -> {
-				Folder folder = fm.queryById(f.getFolderParent());
-				List<Folder> l = fu.getParentList(folder.getFolderId());
-				String pl = new String();
-				for (Folder i : l) {
-					pl = pl + i.getFolderName() + "/";
-				}
-				String content = ">IP [" + ip + "]\r\n>ACCOUNT [" + a + "]\r\n>OPERATE [Move Folder]\r\n>NEW PATH ["
-						+ pl + folder.getFolderName() + "/" + f.getFolderName() + "]";
+				String content = ">IP [" + ip + "]\r\n>ACCOUNT [" + a + "]\r\n>OPERATE ["
+						+ (isCopy ? "Copy Folder" : "Move Folder") + "]\r\n>FROM [" + originPath + "]\r\n>TO   ["
+						+ finalPath + "]";
 				writeToLog("Event", content);
 			});
 		}
 	}
-
+	
+	// 将文本信息以格式化标准写入日志文件中
 	private void writeToLog(String type, String content) {
 		String t = ServerTimeUtil.accurateToLogName();
 		String finalContent = "\r\n\r\nTIME:\r\n" + ServerTimeUtil.accurateToSecond() + "\r\nTYPE:\r\n" + type
@@ -438,12 +458,12 @@ public class LogUtil {
 	}
 
 	/**
-	 * 以格式化记录下载文件日志
+	 * 以格式化记录打包下载文件日志
 	 * <p>
-	 * 写入下载文件信息
+	 * 写入打包下载文件信息
 	 * </p>
 	 */
-	public void writeDownloadCheckedFileEvent(HttpServletRequest request, List<String> idList) {
+	public void writeDownloadCheckedFileEvent(HttpServletRequest request, List<String> idList, List<String> fidList) {
 		if (ConfigureReader.instance().inspectLogLevel(LogLevel.Event)) {
 			String account = (String) request.getSession().getAttribute("ACCOUNT");
 			if (account == null || account.length() == 0) {
@@ -453,18 +473,17 @@ public class LogUtil {
 			String ip = idg.getIpAddr(request);
 			writerThread.execute(() -> {
 				StringBuffer content = new StringBuffer(">IP [" + ip + "]\r\n>ACCOUNT [" + a
-						+ "]\r\n>OPERATE [Download checked file]\r\n----------------\r\n");
+						+ "]\r\n>OPERATE [Download package]\r\n----------------\r\n");
 				for (String fid : idList) {
 					Node f = fim.queryById(fid);
 					if (f != null) {
-						Folder folder = fm.queryById(f.getFileParentFolder());
-						List<Folder> l = fu.getParentList(folder.getFolderId());
-						String pl = new String();
-						for (Folder i : l) {
-							pl = pl + i.getFolderName() + "/";
-						}
-						content.append(
-								">PATH [" + pl + folder.getFolderName() + "]\r\n>NAME [" + f.getFileName() + "]\r\n");
+						content.append(">File [" + fbu.getNodePath(f) + "]\r\n");
+					}
+				}
+				for (String ffid : fidList) {
+					Folder fl = fm.queryById(ffid);
+					if (fl != null) {
+						content.append(">Folder [" + fu.getFolderPath(fl) + "]\r\n");
 					}
 				}
 				content.append("----------------");

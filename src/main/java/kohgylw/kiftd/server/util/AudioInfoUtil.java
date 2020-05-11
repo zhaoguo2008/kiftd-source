@@ -11,12 +11,14 @@ import java.io.*;
 
 @Component
 public class AudioInfoUtil {
-	
+
 	@Resource
 	private FileBlockUtil fbu;
 	@Resource
 	private LogUtil lu;
-	
+	@Resource
+	private TxtCharsetGetter tcg;
+
 	private static final String ERROR_ARTIST = "\u7fa4\u661f";
 	private static final String DEFAULT_LRC = "css/audio_default.lrc";
 	private static final String DEFAULT_COVER = "css/audio_default.png";
@@ -32,7 +34,7 @@ public class AudioInfoUtil {
 			final String suffix = n.getFileName().substring(n.getFileName().lastIndexOf(".") + 1);
 			if (suffix.equalsIgnoreCase("mp3") || suffix.equalsIgnoreCase("ogg") || suffix.equalsIgnoreCase("wav")) {
 				final AudioInfo ai = new AudioInfo();
-				ai.setUrl("resourceController/getResource.do?fid=" + n.getFileId());
+				ai.setUrl("resourceController/getResource/" + n.getFileId());
 				ai.setLrc(DEFAULT_LRC);
 				ai.setArtist(ERROR_ARTIST);
 				ai.setCover(DEFAULT_COVER);
@@ -61,6 +63,9 @@ public class AudioInfoUtil {
 				final String artist = this.transformCharsetEncoding(buf, 33, 30);
 				if (artist.length() > 0) {
 					ai.setArtist(artist);
+					if(artist.length() > 0) {
+						return;
+					}
 				}
 			}
 			final byte[] buf2 = new byte[10];
@@ -100,7 +105,7 @@ public class AudioInfoUtil {
 					|| ai.getArtist().equals(this.getFileName(e.getFileName())))
 					&& (suffix.equals("jpg") || suffix.equals("jpeg") || suffix.equals("gif") || suffix.equals("bmp")
 							|| suffix.equals("png"))) {
-				ai.setCover("fileblocks/" + e.getFilePath());
+				ai.setCover("resourceController/getResource/" + e.getFileId());
 			}
 		}
 	}
@@ -111,21 +116,8 @@ public class AudioInfoUtil {
 
 	private String transformCharsetEncoding(final byte[] buf, final int offset, final int length) {
 		try {
-			String s = new String(buf, offset, length, "UTF-8");
-			if (s.length() > 0) {
-				if (s.equals(new String(s.getBytes("GBK"), "GBK"))) {
-					return s;
-				}
-				s = new String(buf, offset, length, "GBK");
-				if (s.equals(new String(s.getBytes("UTF-8"), "UTF-8"))) {
-					return s;
-				}
-				s = new String(buf, offset, length, "ISO-8859-1");
-				if (s.equals(new String(s.getBytes("GBK"), "GBK"))) {
-					return s;
-				}
-			}
-		} catch (UnsupportedEncodingException ex) {
+			return new String(buf, offset, length, tcg.getTxtCharset(buf, offset, length)).trim();
+		} catch (Exception ex) {
 			lu.writeException(ex);
 		}
 		return "";

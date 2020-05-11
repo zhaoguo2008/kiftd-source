@@ -31,6 +31,8 @@ public class ShowPictureServiceImpl implements ShowPictureService {
 	private FolderUtil fu;
 	@Resource
 	private FolderMapper flm;
+	@Resource
+	private LogUtil lu;
 
 	/**
 	 * 
@@ -55,22 +57,36 @@ public class ShowPictureServiceImpl implements ShowPictureService {
 						fu.getAllFoldersId(p.getFileParentFolder()))
 						&& ConfigureReader.instance().accessFolder(flm.queryById(p.getFileParentFolder()), account)) {
 					final List<Node> nodes = this.fm.queryBySomeFolder(fileId);
-					final List<Node> pictureViewList = new ArrayList<Node>();
+					final List<PictureInfo> pictureViewList = new ArrayList<>();
 					int index = 0;
 					for (final Node n : nodes) {
 						final String fileName = n.getFileName();
 						final String suffix = fileName.substring(fileName.lastIndexOf(".") + 1).toLowerCase();
-						if (suffix.equals("jpg") || suffix.equals("jpeg") || suffix.equals("gif")
-								|| suffix.equals("bmp") || suffix.equals("png")) {
+						switch (suffix) {
+						case "jpg":
+						case "jpeg":
+						case "bmp":
+						case "png":
+						case "gif":
+							// 对于静态图片格式，如果体积超过2 MB则要进行压缩处理，以加快加载速度
+							PictureInfo pi = new PictureInfo();
+							pi.setFileName(fileName);
 							int pSize = Integer.parseInt(n.getFileSize());
-							if (pSize > 1) {
-								n.setFilePath("homeController/showCondensedPicture.do?fileId=" + n.getFileId());
+							File block = fbu.getFileFromBlocks(n);
+							long lastModified = block.lastModified();// 尽可能地让覆盖后的图片也能立即更新
+							if (pSize > 1 && !suffix.equals("gif")) {
+								pi.setUrl("homeController/showCondensedPicture.do?fileId=" + n.getFileId()
+										+ "&lastmodified=" + lastModified);
+							} else {
+								pi.setUrl("resourceController/getResource/" + n.getFileId() + "?lastmodified=" + lastModified);
 							}
-							pictureViewList.add(n);
-							if (!n.getFileId().equals(fileId)) {
-								continue;
+							pictureViewList.add(pi);
+							if (n.getFileId().equals(fileId)) {
+								index = pictureViewList.size() - 1;// 如果是正要预览的图片，记录位置
 							}
-							index = pictureViewList.size() - 1;
+							break;
+						default:
+							break;
 						}
 					}
 					final PictureViewList pvl = new PictureViewList();
@@ -107,23 +123,23 @@ public class ShowPictureServiceImpl implements ShowPictureService {
 					if (pBlock != null && pBlock.exists()) {
 						try {
 							int pSize = Integer.parseInt(node.getFileSize());
+							String format = "JPG";// 压缩后的格式
 							if (pSize < 3) {
-								Thumbnails.of(pBlock).size(1024, 1024).outputFormat("JPG")
+								Thumbnails.of(pBlock).size(1080, 1080).outputFormat(format)
 										.toOutputStream(response.getOutputStream());
 							} else if (pSize < 5) {
-								Thumbnails.of(pBlock).size(1440, 1440).outputFormat("JPG")
+								Thumbnails.of(pBlock).size(1440, 1440).outputFormat(format)
 										.toOutputStream(response.getOutputStream());
 							} else {
-								Thumbnails.of(pBlock).size(1680, 1680).outputFormat("JPG")
+								Thumbnails.of(pBlock).size(1680, 1680).outputFormat(format)
 										.toOutputStream(response.getOutputStream());
 							}
 						} catch (IOException e) {
-							// TODO 自动生成的 catch 块
 							// 压缩失败时，尝试以源文件进行预览
 							try {
 								Files.copy(pBlock.toPath(), response.getOutputStream());
 							} catch (IOException e1) {
-								// TODO 自动生成的 catch 块
+								lu.writeException(e1);
 							}
 						}
 					}

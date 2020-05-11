@@ -9,7 +9,7 @@ import kohgylw.kiftd.server.mapper.*;
 import javax.annotation.*;
 import javax.servlet.http.*;
 import kohgylw.kiftd.server.enumeration.*;
-import kohgylw.kiftd.server.listener.CleanInvalidAddedAuthListener;
+import kohgylw.kiftd.server.listener.ServerInitListener;
 import kohgylw.kiftd.server.model.*;
 import kohgylw.kiftd.server.pojo.CreateNewFolderByNameRespons;
 import kohgylw.kiftd.server.util.*;
@@ -19,6 +19,7 @@ import java.util.*;
 
 @Service
 public class FolderServiceImpl implements FolderService {
+
 	@Resource
 	private FolderMapper fm;
 	@Resource
@@ -51,6 +52,9 @@ public class FolderServiceImpl implements FolderService {
 		}
 		if (fm.queryByParentId(parentId).parallelStream().anyMatch((e) -> e.getFolderName().equals(folderName))) {
 			return "nameOccupied";
+		}
+		if (fm.countByParentId(parentId) >= FileNodeUtil.MAXIMUM_NUM_OF_SINGLE_FOLDER) {
+			return "foldersTotalOutOfLimit";
 		}
 		Folder f = new Folder();
 		// 设置子文件夹约束等级，不允许子文件夹的约束等级比父文件夹低
@@ -86,11 +90,11 @@ public class FolderServiceImpl implements FolderService {
 			try {
 				final int r = this.fm.insertNewFolder(f);
 				if (r > 0) {
-					if (fu.hasRepeatFolder(f)) {
-						return "cannotCreateFolder";
-					} else {
+					if (fu.isValidFolder(f)) {
 						this.lu.writeCreateFolderEvent(request, f);
 						return "createFolderSuccess";
+					} else {
+						return "cannotCreateFolder";
 					}
 				}
 				break;
@@ -128,9 +132,10 @@ public class FolderServiceImpl implements FolderService {
 		}
 		// 执行迭代删除
 		final List<Folder> l = this.fu.getParentList(folderId);
-		if (this.fu.deleteAllChildFolder(folderId) > 0) {
+		if (this.fm.deleteById(folderId) > 0) {
+			fu.deleteAllChildFolder(folderId);
 			this.lu.writeDeleteFolderEvent(request, folder, l);
-			CleanInvalidAddedAuthListener.needCheck=true;
+			ServerInitListener.needCheck = true;
 			return "deleteFolderSuccess";
 		}
 		return "cannotDeleteFolder";
@@ -175,7 +180,7 @@ public class FolderServiceImpl implements FolderService {
 					map.put("newConstraint", ifc);
 					map.put("folderId", folderId);
 					fm.updateFolderConstraintById(map);
-					changeChildFolderConstraint(folderId, ifc);
+					fu.changeChildFolderConstraint(folderId, ifc);
 					if (!folder.getFolderName().equals(newName)) {
 						if (fm.queryByParentId(parentFolder.getFolderId()).parallelStream()
 								.anyMatch((e) -> e.getFolderName().equals(newName))) {
@@ -196,33 +201,6 @@ public class FolderServiceImpl implements FolderService {
 			}
 		} else {
 			return "errorParameter";
-		}
-	}
-
-	/**
-	 * 
-	 * <h2>迭代修改子文件夹约束</h2>
-	 * <p>
-	 * 当某一文件夹的约束被修改时，其所有子文件夹的约束等级均不得低于其父文件夹。 例如：
-	 * 父文件夹的约束等级改为1（仅小组）时，所有约束等级为0（公开的）的子文件夹的约束等级也会提升为1， 而所有约束等级为2（仅自己）的子文件夹则不会受影响。
-	 * </p>
-	 * 
-	 * @author 青阳龙野(kohgylw)
-	 * @param folderId
-	 *            要修改的文件夹ID
-	 * @param c
-	 *            约束等级
-	 */
-	private void changeChildFolderConstraint(String folderId, int c) {
-		List<Folder> cfs = fm.queryByParentId(folderId);
-		for (Folder cf : cfs) {
-			if (cf.getFolderConstraint() < c) {
-				Map<String, Object> map = new HashMap<String, Object>();
-				map.put("newConstraint", c);
-				map.put("folderId", cf.getFolderId());
-				fm.updateFolderConstraintById(map);
-			}
-			changeChildFolderConstraint(cf.getFolderId(), c);
 		}
 	}
 
@@ -251,13 +229,14 @@ public class FolderServiceImpl implements FolderService {
 				return "deleteError";
 			}
 			final List<Folder> l = this.fu.getParentList(rf.getFolderId());
-			if (this.fu.deleteAllChildFolder(rf.getFolderId()) > 0) {
+			if (this.fm.deleteById(rf.getFolderId()) > 0) {
+				fu.deleteAllChildFolder(rf.getFolderId());
 				this.lu.writeDeleteFolderEvent(request, rf, l);
 			} else {
 				return "deleteError";
 			}
 		}
-		CleanInvalidAddedAuthListener.needCheck=true;
+		ServerInitListener.needCheck = true;
 		return "deleteSuccess";
 	}
 
@@ -272,7 +251,7 @@ public class FolderServiceImpl implements FolderService {
 			cnfbnr.setResult("error");
 			return gson.toJson(cnfbnr);
 		}
-		if (!TextFormateUtil.instance().matcherFolderName(folderName) || folderName.indexOf(".") == 0) {
+		if (!TextFormateUtil.instance().matcherFolderName(folderName)) {
 			cnfbnr.setResult("error");
 			return gson.toJson(cnfbnr);
 		}
@@ -284,6 +263,10 @@ public class FolderServiceImpl implements FolderService {
 		if (!ConfigureReader.instance().authorized(account, AccountAuth.CREATE_NEW_FOLDER,
 				fu.getAllFoldersId(parentId))) {
 			cnfbnr.setResult("error");
+			return gson.toJson(cnfbnr);
+		}
+		if (fm.countByParentId(parentId) >= FileNodeUtil.MAXIMUM_NUM_OF_SINGLE_FOLDER) {
+			cnfbnr.setResult("foldersTotalOutOfLimit");
 			return gson.toJson(cnfbnr);
 		}
 		Folder f = new Folder();
@@ -329,13 +312,13 @@ public class FolderServiceImpl implements FolderService {
 			try {
 				final int r = this.fm.insertNewFolder(f);
 				if (r > 0) {
-					if (fu.hasRepeatFolder(f)) {
-						cnfbnr.setResult("error");
-						return gson.toJson(cnfbnr);
-					} else {
+					if (fu.isValidFolder(f)) {
 						this.lu.writeCreateFolderEvent(request, f);
 						cnfbnr.setResult("success");
 						cnfbnr.setNewName(f.getFolderName());
+						return gson.toJson(cnfbnr);
+					} else {
+						cnfbnr.setResult("error");
 						return gson.toJson(cnfbnr);
 					}
 				}
