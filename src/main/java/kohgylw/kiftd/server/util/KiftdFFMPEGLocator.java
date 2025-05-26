@@ -7,31 +7,22 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 
-import javax.annotation.Resource;
-
 import org.springframework.stereotype.Component;
 
 import kohgylw.kiftd.printer.Printer;
-import ws.schild.jave.FFMPEGLocator;
+import ws.schild.jave.Version;
+import ws.schild.jave.process.ProcessLocator;
+import ws.schild.jave.process.ProcessWrapper;
+import ws.schild.jave.process.ffmpeg.FFMPEGProcess;
 
 @Component
-public class KiftdFFMPEGLocator extends FFMPEGLocator {
-
-	@Resource
-	private LogUtil lu;
-
-	/**
-	 * 内置的ffmpeg引擎的版本号，应该与jave整合资源本身自带的ffmpeg引擎版本对应
-	 */
-	private static final String MY_EXE_VERSION = "2.5.0";
+public class KiftdFFMPEGLocator implements ProcessLocator {
 
 	private boolean enableFFmpeg;
 
 	private String suffix;
 
 	private String arch;
-
-	private File dirFolder;
 
 	private boolean isWindows;
 
@@ -50,12 +41,6 @@ public class KiftdFFMPEGLocator extends FFMPEGLocator {
 		String os = System.getProperty("os.name").toLowerCase();
 		isWindows = os.contains("windows");
 		boolean isMac = os.contains("mac");
-
-		dirFolder = new File(System.getProperty("java.io.tmpdir"), "jave/");
-		if (!dirFolder.exists()) {
-			dirFolder.mkdirs();
-		}
-
 		suffix = isWindows ? ".exe" : (isMac ? "-osx" : "");
 		arch = System.getProperty("os.arch");
 		// 服务器启动时第一次初始化ffmpeg执行路径
@@ -64,10 +49,9 @@ public class KiftdFFMPEGLocator extends FFMPEGLocator {
 	}
 
 	@Override
-	public String getFFMPEGExecutablePath() {
+	public String getExecutablePath() {
 		// 每次获得路径时再次初始化ffmpeg执行路径
-		return initFFMPEGExecutablePath();// 这里的目的在于避免运行中ffmpeg被删掉从而导致程序找不到它，
-		// 同时更新enableFFmpeg属性。
+		return initFFMPEGExecutablePath();// 这里的目的在于避免运行中ffmpeg被删掉从而导致程序找不到它，同时更新enableFFmpeg属性。
 	}
 
 	// 初始化ffmpeg执行路径并返回，过程包括：
@@ -77,6 +61,15 @@ public class KiftdFFMPEGLocator extends FFMPEGLocator {
 		if (!ConfigureReader.instance().isEnableFFMPEG()) {
 			enableFFmpeg = false;
 			return null;
+		}
+		// 在临时文件夹内创建用于存放ffmpeg可执行文件的专用文件夹
+		File dirFolder = new File(System.getProperty("java.io.tmpdir"), "jave/");
+		if (!dirFolder.exists()) {
+			if (!dirFolder.mkdirs()) {
+				Printer.instance.print("警告：无法在临时文件夹内生成ffmpeg引擎可执行文件，视频播放的在线解码功能将不可用。");
+				enableFFmpeg = false;
+				return null;
+			}
 		}
 		// 是否在程序主目录下放置了自定义的ffmpeg可执行文件“ffmpeg.exe”/“ffmpeg”？
 		File ffmpegFile;
@@ -90,8 +83,8 @@ public class KiftdFFMPEGLocator extends FFMPEGLocator {
 				try {
 					Files.copy(customFFMPEGexef.toPath(), ffmpegFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
 				} catch (IOException e) {
+					Printer.instance.print(e.toString());
 					Printer.instance.print("警告：自定义的ffmpeg引擎可执行文件无法读取，视频播放的在线解码功能将不可用。");
-					lu.writeException(e);
 					enableFFmpeg = false;
 					return null;
 				}
@@ -100,22 +93,17 @@ public class KiftdFFMPEGLocator extends FFMPEGLocator {
 		} else {
 			// 否则，使用内置的ffmpeg文件。
 			// 临时文件中是否已经拷贝好了ffmpeg可执行文件了？
-			ffmpegFile = new File(dirFolder, "ffmpeg-" + arch + "-" + MY_EXE_VERSION + suffix);
+			ffmpegFile = new File(dirFolder, "ffmpeg-" + arch + "-" + Version.getVersion() + suffix);
 			if (!ffmpegFile.exists()) {
-				// 没有？那将自带的、对应操作系统的ffmpeg文件拷贝到临时目录中，如果没有对应自带的ffmpeg，那么会抛出异常
-				// 如果抛出异常，那么直接结束构造
-				try {
-					copyFile("ffmpeg-" + arch + suffix, ffmpegFile);
-				} catch (NullPointerException e) {
+				// 没有？那将自带的、对应操作系统的ffmpeg文件拷贝到临时目录中，如果没有对应自带的ffmpeg，那么直接结束构造
+				if (!copyFile("ffmpeg-" + arch + suffix, ffmpegFile)) {
 					Printer.instance.print("警告：未能找到适合此操作系统的ffmpeg引擎可执行文件，视频播放的在线解码功能将不可用。");
-					lu.writeException(e);
 					enableFFmpeg = false;
 					return null;
 				}
 			}
 			// 已经有了？那么它应该准备好了
 		}
-
 		// 对于类Unix系统而言，还要确保临时目录授予可运行权限，以便jave运行时调用ffmpeg
 		if (!isWindows) {
 			if (!ffmpegFile.canExecute()) {
@@ -123,13 +111,13 @@ public class KiftdFFMPEGLocator extends FFMPEGLocator {
 					Runtime.getRuntime().exec(new String[] { "/bin/chmod", "755", ffmpegFile.getAbsolutePath() });
 				} catch (IOException e) {
 					// 授予权限失败的话……好像也没啥好办法
-					lu.writeException(e);
+					Printer.instance.print(e.toString());
+					Printer.instance.print("警告：无法为ffmpeg引擎可执行文件授予执行权限，视频播放的在线解码功能将不可用。");
 					enableFFmpeg = false;
 					return null;
 				}
 			}
 		}
-
 		// 上述工作都做好了，就可以将ffmpeg的路径返回给jave调用了。
 		// 如果到不了这里，说明初始化失败，该方法返回null，那么应该禁用jave的在线转码功能
 		enableFFmpeg = true;
@@ -137,15 +125,29 @@ public class KiftdFFMPEGLocator extends FFMPEGLocator {
 	}
 
 	// 把文件从自带的jar包中拷贝出来，移入指定文件夹
-	private void copyFile(String path, File dest) {
-		String resourceName = "/ws/schild/jave/native/" + path;
-		try {
-			if (!copy(getClass().getResourceAsStream(resourceName), dest.getAbsolutePath())) {
-				throw new NullPointerException();
-			}
-		} catch (NullPointerException ex) {
-			throw ex;
+	private boolean copyFile(String path, File dest) {
+		String resourceName = "nativebin/" + path;
+		InputStream is = getClass().getResourceAsStream(resourceName);
+		if (is == null) {
+			resourceName = "ws/schild/jave/nativebin/" + path;
+			is = ClassLoader.getSystemResourceAsStream(resourceName);
 		}
+		if (is == null) {
+			resourceName = "ws/schild/jave/nativebin/" + path;
+			ClassLoader classloader = Thread.currentThread().getContextClassLoader();
+			is = classloader.getResourceAsStream(resourceName);
+		}
+		if (is != null) {
+			boolean copyResult = copy(is, dest.getAbsolutePath());
+			try {
+				is.close();
+				return copyResult;
+			} catch (IOException ioex) {
+				Printer.instance.print(ioex.toString());
+				Printer.instance.print("警告：无法在临时文件夹内生成ffmpeg引擎可执行文件，视频播放的在线解码功能将不可用。");
+			}
+		}
+		return false;
 	}
 
 	// 以文件的形式把流存入指定文件夹内
@@ -160,7 +162,14 @@ public class KiftdFFMPEGLocator extends FFMPEGLocator {
 	}
 
 	public boolean isEnableFFmpeg() {
+		if (enableFFmpeg) {
+			initFFMPEGExecutablePath();// 避免在kiftd运行途中ffmpeg作为临时文件被清除
+		}
 		return enableFFmpeg;
 	}
 
+	@Override
+	public ProcessWrapper createExecutor() {
+		return new FFMPEGProcess(getExecutablePath());
+	}
 }

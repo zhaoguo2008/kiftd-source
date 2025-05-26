@@ -68,7 +68,7 @@ public class AccountServiceImpl implements AccountService {
 		final String encrypted = request.getParameter("encrypted");
 		try {
 			final String loginInfoStr = RSADecryptUtil.dncryption(encrypted, ku.getPrivateKey());
-			final LoginInfoPojo info = gson.fromJson(loginInfoStr, LoginInfoPojo.class);
+			final LoginInfoPojo info = gson.fromJson(loginInfoStr.replaceAll("\\\\", "\\\\\\\\"), LoginInfoPojo.class);
 			if (System.currentTimeMillis() - Long.parseLong(info.getTime()) > TIME_OUT) {
 				return "error";
 			}
@@ -171,7 +171,8 @@ public class AccountServiceImpl implements AccountService {
 		final String encrypted = request.getParameter("encrypted");
 		try {
 			final String changePasswordInfoStr = RSADecryptUtil.dncryption(encrypted, ku.getPrivateKey());
-			final ChangePasswordInfoPojo info = gson.fromJson(changePasswordInfoStr, ChangePasswordInfoPojo.class);
+			final ChangePasswordInfoPojo info = gson.fromJson(changePasswordInfoStr.replaceAll("\\\\", "\\\\\\\\"),
+					ChangePasswordInfoPojo.class);
 			if (System.currentTimeMillis() - Long.parseLong(info.getTime()) > TIME_OUT) {
 				return "error";
 			}
@@ -250,7 +251,8 @@ public class AccountServiceImpl implements AccountService {
 		final String encrypted = request.getParameter("encrypted");
 		try {
 			final String signUpInfoStr = RSADecryptUtil.dncryption(encrypted, ku.getPrivateKey());
-			final SignUpInfoPojo info = gson.fromJson(signUpInfoStr, SignUpInfoPojo.class);
+			final SignUpInfoPojo info = gson.fromJson(signUpInfoStr.replaceAll("\\\\", "\\\\\\\\"),
+					SignUpInfoPojo.class);
 			if (System.currentTimeMillis() - Long.parseLong(info.getTime()) > TIME_OUT) {
 				return "error";
 			}
@@ -262,7 +264,7 @@ public class AccountServiceImpl implements AccountService {
 			// 新账户和密码的合法性检查
 			if (account != null && account.length() >= 3 && account.length() <= 32
 					&& ios8859_1Encoder.canEncode(account)) {
-				if(account.indexOf("=") < 0 && account.indexOf(":") < 0) {
+				if (account.indexOf("=") < 0 && account.indexOf(":") < 0 && account.indexOf("#") != 0) {
 					if (password != null && password.length() >= 3 && password.length() <= 32
 							&& ios8859_1Encoder.canEncode(password)) {
 						if (ConfigureReader.instance().createNewAccount(account, password)) {
@@ -275,7 +277,7 @@ public class AccountServiceImpl implements AccountService {
 					} else {
 						return "invalidpwd";
 					}
-				}else {
+				} else {
 					return "illegalaccount";
 				}
 			} else {

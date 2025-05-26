@@ -6,9 +6,12 @@ import java.awt.Dimension;
 import java.io.File;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
+import java.nio.file.FileAlreadyExistsException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import javax.swing.JButton;
 import javax.swing.JDialog;
@@ -17,6 +20,7 @@ import javax.swing.JOptionPane;
 import javax.swing.JScrollPane;
 import javax.swing.JToolBar;
 import javax.swing.ListSelectionModel;
+import javax.swing.SwingUtilities;
 import javax.swing.event.ListSelectionEvent;
 import javax.swing.event.ListSelectionListener;
 
@@ -24,6 +28,7 @@ import kohgylw.kiftd.printer.Printer;
 import kohgylw.kiftd.server.util.ConfigureReader;
 import kohgylw.kiftd.ui.pojo.FileSystemPath;
 import kohgylw.kiftd.ui.util.PathsTable;
+import kohgylw.kiftd.util.file_system_manager.FileSystemManager;
 
 /**
  * 
@@ -42,10 +47,11 @@ public class FileSystemPathViewer extends KiftdDynamicWindow {
 	private JButton changeBtn;// 修改按钮
 	private JButton removeBtn;// 删除按钮
 	private PathsTable pathsTable;// 文件列表对象
-	private int maxExtendStoresNum;//最大扩展存储区数目
+	private int maxExtendStoresNum;// 最大扩展存储区数目
 
 	private static FileSystemPathViewer fsv;// 该窗口的唯一实例
 	private static List<FileSystemPath> paths;// 当前显示的视图
+	private static ExecutorService worker;// 操作线程池
 	private CharsetEncoder encoder;// ISO-8859-1编码器
 
 	// 错误提示信息
@@ -55,6 +61,7 @@ public class FileSystemPathViewer extends KiftdDynamicWindow {
 	private FileSystemPathViewer() {
 		encoder = Charset.forName("ISO-8859-1").newEncoder();
 		setUIFont();
+		worker = Executors.newSingleThreadExecutor();
 		(window = new JDialog(SettingWindow.window, "管理文件系统路径")).setModal(true);
 		window.setSize(600, 240);
 		window.setDefaultCloseOperation(1);
@@ -64,7 +71,6 @@ public class FileSystemPathViewer extends KiftdDynamicWindow {
 		Container c = window.getContentPane();
 		JToolBar toolBar = new JToolBar();
 		toolBar.setFloatable(false);
-		// TODO 自动生成的 catch 块
 		addBtn = new JButton("新建 扩展存储区[Add]");
 		changeBtn = new JButton("修改路径[Change]");
 		removeBtn = new JButton("移除路径[Remove]");
@@ -80,7 +86,7 @@ public class FileSystemPathViewer extends KiftdDynamicWindow {
 		toolBar.addSeparator();
 		c.add(toolBar, BorderLayout.NORTH);
 		// 各个工具栏按钮的功能实现
-		maxExtendStoresNum=SettingWindow.st==null?0:SettingWindow.st.getMaxExtendStoresNum();
+		maxExtendStoresNum = SettingWindow.st == null ? 0 : SettingWindow.st.getMaxExtendStoresNum();
 		addBtn.addActionListener((e) -> {
 			disableAllButtons();
 			if (SettingWindow.extendStores.size() < maxExtendStoresNum) {
@@ -126,79 +132,79 @@ public class FileSystemPathViewer extends KiftdDynamicWindow {
 		});
 		changeBtn.addActionListener((e) -> {
 			disableAllButtons();
-			if (JOptionPane.showConfirmDialog(window, "确认要修改该存储路径么？警告：修改为新路径后，该存储区内原先存放的数据将会丢失。", "修改路径",
-					JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) {
-				return;
-			}
-			short index = pathsTable.getSelectFileSystemIndex();
-			if (index == 0) {
-				JFileChooser mainFileSystemPathChooer = new JFileChooser();
-				mainFileSystemPathChooer.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-				mainFileSystemPathChooer.setPreferredSize(fileChooerSize);
-				if (SettingWindow.st != null) {
-					File fileSystemPath = new File(SettingWindow.st.getFileSystemPath());
-					if (fileSystemPath.isDirectory()) {
-						mainFileSystemPathChooer.setCurrentDirectory(fileSystemPath);
-					}
-				}
-				mainFileSystemPathChooer.setDialogTitle("请选择主文件系统存储路径");
-				if (mainFileSystemPathChooer.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
-					File selectPath = mainFileSystemPathChooer.getSelectedFile();
-					if (selectPath.isDirectory() && selectPath.canWrite() && selectPath.canRead()) {
-						if (!SettingWindow.extendStores.parallelStream()
-								.anyMatch(f -> f.getPath().equals(selectPath))) {
-							String pathName = selectPath.getAbsolutePath();
-							if (new File(ConfigureReader.instance().getInitFileSystemPath()).equals(selectPath)
-									|| (encoder.canEncode(pathName) && pathName.indexOf("\\:") < 0
-											&& pathName.indexOf("\\\\") < 0)) {
-								SettingWindow.chooserPath = mainFileSystemPathChooer.getSelectedFile();
-							} else {
-								JOptionPane.showMessageDialog(window, INVALID_PATH_ALTER, "错误",
-										JOptionPane.WARNING_MESSAGE);
-							}
-						} else {
-							JOptionPane.showMessageDialog(window, "错误：该路径已被某个扩展存储区占用。", "错误",
-									JOptionPane.WARNING_MESSAGE);
+			if (JOptionPane.showConfirmDialog(window,
+					"确认要修改该存储区路径么？警告：如需保留该存储区内的全部数据，应先将该存储区原路径指定的文件夹移动到新位置，再将移动后的文件夹设置为该存储区的新路径。否则，该存储区内的数据将全部丢失。",
+					"修改路径", JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
+				short index = pathsTable.getSelectFileSystemIndex();
+				if (index == 0) {
+					JFileChooser mainFileSystemPathChooer = new JFileChooser();
+					mainFileSystemPathChooer.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+					mainFileSystemPathChooer.setPreferredSize(fileChooerSize);
+					if (SettingWindow.st != null) {
+						File fileSystemPath = new File(SettingWindow.st.getFileSystemPath());
+						if (fileSystemPath.isDirectory()) {
+							mainFileSystemPathChooer.setCurrentDirectory(fileSystemPath);
 						}
-					} else {
-						JOptionPane.showMessageDialog(window, "错误：该路径不可用，必须选择可读写的文件夹。", "错误",
-								JOptionPane.WARNING_MESSAGE);
 					}
-				}
-			} else {
-				JFileChooser mainFileSystemPathChooer = new JFileChooser();
-				mainFileSystemPathChooer.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-				mainFileSystemPathChooer.setPreferredSize(fileChooerSize);
-				FileSystemPath fsp = null;
-				for (int i = 0; i < SettingWindow.extendStores.size(); i++) {
-					if (SettingWindow.extendStores.get(i).getIndex() == index) {
-						fsp = SettingWindow.extendStores.get(i);
-						mainFileSystemPathChooer.setCurrentDirectory(fsp.getPath());
-						mainFileSystemPathChooer.setDialogTitle("请选择扩展存储区路径");
-						if (mainFileSystemPathChooer.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
-							disableAllButtons();
-							File selectPath = mainFileSystemPathChooer.getSelectedFile();
-							if (selectPath.isDirectory() && selectPath.canWrite() && selectPath.canRead()) {
-								if (fsp.getPath().equals(selectPath) || !SettingWindow.extendStores.parallelStream()
-										.anyMatch(f -> f.getPath().equals(selectPath))) {
-									String pathName = selectPath.getAbsolutePath();
-									if (encoder.canEncode(pathName) && pathName.indexOf("\\:") < 0
-											&& pathName.indexOf("\\\\") < 0) {
-										fsp.setPath(mainFileSystemPathChooer.getSelectedFile());
-									} else {
-										JOptionPane.showMessageDialog(window, INVALID_PATH_ALTER, "错误",
-												JOptionPane.WARNING_MESSAGE);
-									}
+					mainFileSystemPathChooer.setDialogTitle("请选择主文件系统存储路径");
+					if (mainFileSystemPathChooer.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
+						File selectPath = mainFileSystemPathChooer.getSelectedFile();
+						if (selectPath.isDirectory() && selectPath.canWrite() && selectPath.canRead()) {
+							if (!SettingWindow.extendStores.parallelStream()
+									.anyMatch(f -> f.getPath().equals(selectPath))) {
+								String pathName = selectPath.getAbsolutePath();
+								if (new File(ConfigureReader.instance().getInitFileSystemPath()).equals(selectPath)
+										|| (encoder.canEncode(pathName) && pathName.indexOf("\\:") < 0
+												&& pathName.indexOf("\\\\") < 0)) {
+									SettingWindow.chooserPath = mainFileSystemPathChooer.getSelectedFile();
 								} else {
-									JOptionPane.showMessageDialog(window, "错误：该路径已被其他扩展存储区占用。", "错误",
+									JOptionPane.showMessageDialog(window, INVALID_PATH_ALTER, "错误",
 											JOptionPane.WARNING_MESSAGE);
 								}
 							} else {
-								JOptionPane.showMessageDialog(window, "错误：该路径不可用，必须选择可读写的文件夹。", "错误",
+								JOptionPane.showMessageDialog(window, "错误：该路径已被某个扩展存储区占用。", "错误",
 										JOptionPane.WARNING_MESSAGE);
 							}
+						} else {
+							JOptionPane.showMessageDialog(window, "错误：该路径不可用，必须选择可读写的文件夹。", "错误",
+									JOptionPane.WARNING_MESSAGE);
 						}
-						break;
+					}
+				} else {
+					JFileChooser mainFileSystemPathChooer = new JFileChooser();
+					mainFileSystemPathChooer.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+					mainFileSystemPathChooer.setPreferredSize(fileChooerSize);
+					FileSystemPath fsp = null;
+					for (int i = 0; i < SettingWindow.extendStores.size(); i++) {
+						if (SettingWindow.extendStores.get(i).getIndex() == index) {
+							fsp = SettingWindow.extendStores.get(i);
+							mainFileSystemPathChooer.setCurrentDirectory(fsp.getPath());
+							mainFileSystemPathChooer.setDialogTitle("请选择扩展存储区路径");
+							if (mainFileSystemPathChooer.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
+								disableAllButtons();
+								File selectPath = mainFileSystemPathChooer.getSelectedFile();
+								if (selectPath.isDirectory() && selectPath.canWrite() && selectPath.canRead()) {
+									if (fsp.getPath().equals(selectPath) || !SettingWindow.extendStores.parallelStream()
+											.anyMatch(f -> f.getPath().equals(selectPath))) {
+										String pathName = selectPath.getAbsolutePath();
+										if (encoder.canEncode(pathName) && pathName.indexOf("\\:") < 0
+												&& pathName.indexOf("\\\\") < 0) {
+											fsp.setPath(mainFileSystemPathChooer.getSelectedFile());
+										} else {
+											JOptionPane.showMessageDialog(window, INVALID_PATH_ALTER, "错误",
+													JOptionPane.WARNING_MESSAGE);
+										}
+									} else {
+										JOptionPane.showMessageDialog(window, "错误：该路径已被其他扩展存储区占用。", "错误",
+												JOptionPane.WARNING_MESSAGE);
+									}
+								} else {
+									JOptionPane.showMessageDialog(window, "错误：该路径不可用，必须选择可读写的文件夹。", "错误",
+											JOptionPane.WARNING_MESSAGE);
+								}
+							}
+							break;
+						}
 					}
 				}
 			}
@@ -212,13 +218,86 @@ public class FileSystemPathViewer extends KiftdDynamicWindow {
 				short index = pathsTable.getSelectFileSystemIndex();
 				for (int i = 0; i < SettingWindow.extendStores.size(); i++) {
 					if (SettingWindow.extendStores.get(i).getIndex() == index) {
-						SettingWindow.extendStores.remove(i);
+						final int removeItemIndex = i;// 待删除的扩展存储区索引号
+						// 检查该存储区内是否存有数据
+						try {
+							long total = FileSystemManager.getInstance().getTotalOfNodesAtExtendStore(index);
+							if (total > 0) {
+								// 如果已存有数据，则询问是否需要移出
+								switch (JOptionPane.showConfirmDialog(window,
+										"是否立即将该扩展存储区内的数据全部移出以便留档？如果您确定要移除该扩展存储区，推荐执行该操作。注意：该操作即时生效，无论是否应用新设置均无法回退。",
+										"移出", JOptionPane.YES_NO_CANCEL_OPTION)) {
+								case 0:
+									// 是：先执行移出操作
+									JFileChooser transferDirChooer = new JFileChooser();
+									transferDirChooer.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+									transferDirChooer.setPreferredSize(fileChooerSize);
+									transferDirChooer.setDialogTitle("请选择移出数据的保存路径...");
+									if (transferDirChooer.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
+										File transferDir = transferDirChooer.getSelectedFile();
+										worker.execute(() -> {
+											FSProgressDialog fsd = FSProgressDialog.getNewInstance(window);
+											Thread t = new Thread(() -> {
+												fsd.show();
+											});
+											t.start();
+											try {
+												boolean r = FileSystemManager.getInstance().transferExtendStore(index,
+														transferDir);
+												SwingUtilities.invokeLater(() -> {
+													fsd.close();
+													if (r) {
+														// 若所有数据移出成功，则移除指定存储区并结束流程
+														SettingWindow.extendStores.remove(removeItemIndex);
+														refresh();// 这里单独刷新一次是因为此部分逻辑可能会稍后才执行
+													} else {
+														// 若出现错误，则进行提示
+														JOptionPane.showMessageDialog(window,
+																"移出文件时失败，该操作已被中断，未能移出全部数据。", "错误",
+																JOptionPane.ERROR_MESSAGE);
+													}
+												});
+											} catch (FileAlreadyExistsException e1) {
+												SwingUtilities.invokeLater(() -> {
+													fsd.close();
+													JOptionPane.showMessageDialog(window,
+															"目标文件夹内存在同名文件，建议选择一个空文件夹作为移出数据的保存路径。", "错误",
+															JOptionPane.ERROR_MESSAGE);
+												});
+											} catch (Exception e1) {
+												SwingUtilities.invokeLater(() -> {
+													fsd.close();
+													JOptionPane.showMessageDialog(window,
+															"出现意外错误，无法统计扩展存储区数据，请重启应用后重试。", "错误",
+															JOptionPane.ERROR_MESSAGE);
+												});
+
+											}
+										});
+									}
+									break;
+								case 1:
+									// 否：直接移除指定存储区
+									SettingWindow.extendStores.remove(i);
+									break;
+								case 2:
+								default:
+									break;
+								}
+							} else {
+								SettingWindow.extendStores.remove(i);
+							}
+						} catch (Exception e1) {
+							JOptionPane.showMessageDialog(window, "出现意外错误，无法统计扩展存储区数据，请重启应用后重试。", "错误",
+									JOptionPane.ERROR_MESSAGE);
+						}
 						break;
 					}
 				}
 			}
 			enableAllButtons();
 			refresh();
+
 		});
 		// 生成文件列表
 		pathsTable = new PathsTable();
@@ -247,7 +326,7 @@ public class FileSystemPathViewer extends KiftdDynamicWindow {
 		modifyComponentSize(window);
 	}
 
-	// 刷新文件列表
+	// 刷新列表
 	private void refresh() {
 		paths.clear();
 		FileSystemPath mainfsp = new FileSystemPath();

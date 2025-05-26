@@ -79,9 +79,9 @@ public class ServerInitListener implements ServletContextListener {
 	}
 
 	public void contextDestroyed(final ServletContextEvent sce) {
-		// 1，关闭动态监听
+		// 停止服务器主目录改动的动态监听
 		run = false;
-		// 2，清理临时文件夹
+		// 清理临时文件
 		Printer.instance.print("清理临时文件...");
 		fbu.initTempDir();
 	}

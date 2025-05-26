@@ -1,6 +1,7 @@
 package kohgylw.kiftd.server.util;
 
 import java.io.File;
+import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -32,7 +33,7 @@ public class FileNodeUtil {
 	private static String url;// 当前链接的节点数据库位置
 
 	/**
-	 * 但文件夹内允许存放的最大文件和文件夹数目
+	 * 单文件夹内允许存放的最大文件和文件夹数目
 	 */
 	public static final int MAXIMUM_NUM_OF_SINGLE_FOLDER = Integer.MAX_VALUE;
 
@@ -57,6 +58,18 @@ public class FileNodeUtil {
 				conn = DriverManager.getConnection(newUrl, ConfigureReader.instance().getFileNodePathUserName(),
 						ConfigureReader.instance().getFileNodePathPassWord());
 				url = newUrl;
+				// 检查是否存在旧版本的归档数据，若有，则尝试将其导入。
+				File upgradeFile = new File(ConfigureReader.instance().getFileNodePath() + "upgrade.sql");
+				if (upgradeFile.isFile()) {
+					Printer.instance.print("正在从旧版本导入数据...");
+					final Statement state0 = conn.createStatement();
+					state0.execute("RUNSCRIPT FROM '" + upgradeFile.getAbsolutePath() + "' FROM_1X");
+					state0.close();
+					if (!upgradeFile.delete()) {
+						throw new IOException("错误：旧归档文件删除失败：" + upgradeFile.getAbsolutePath());
+					}
+				}
+				// 生成数据库表并初始化数据内容
 				final Statement state1 = conn.createStatement();
 				state1.execute(
 						"CREATE TABLE IF NOT EXISTS FOLDER(folder_id VARCHAR(128) PRIMARY KEY,  folder_name VARCHAR(128) NOT NULL,folder_creation_date VARCHAR(128) NOT NULL,  folder_creator VARCHAR(128) NOT NULL,folder_parent VARCHAR(128) NOT NULL,folder_constraint INT NOT NULL)");
@@ -73,13 +86,6 @@ public class FileNodeUtil {
 				state2.execute(
 						"CREATE TABLE IF NOT EXISTS FILE(file_id VARCHAR(128) PRIMARY KEY,file_name VARCHAR(128) NOT NULL,file_size VARCHAR(128) NOT NULL,file_parent_folder varchar(128) NOT NULL,file_creation_date varchar(128) NOT NULL,file_creator varchar(128) NOT NULL,file_path varchar(128) NOT NULL)");
 				state2.close();
-				// 为了匹配之前的版本而设计的兼容性字段设置，后续可能会删除
-				if (!ConfigureReader.instance().useMySQL()) {
-					final Statement state3 = conn.createStatement();
-					state3.execute(
-							"ALTER TABLE FOLDER ADD COLUMN IF NOT EXISTS folder_constraint INT NOT NULL DEFAULT 0");
-					state3.close();
-				}
 				// 为数据库生成索引，此处分为MySQL和H2两种操作
 				if (ConfigureReader.instance().useMySQL()) {
 					final Statement state4 = conn.createStatement();
@@ -132,10 +138,8 @@ public class FileNodeUtil {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param originalName
-	 *            java.lang.String 原始文件名
-	 * @param nodes
-	 *            java.util.List Node 要检查的文件节点列表
+	 * @param originalName java.lang.String 原始文件名
+	 * @param nodes        java.util.List Node 要检查的文件节点列表
 	 * @return java.lang.String 新文件名
 	 */
 	public static String getNewNodeName(String originalName, List<Node> nodes) {
@@ -163,10 +167,8 @@ public class FileNodeUtil {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param originalName
-	 *            java.lang.String 原始文件夹名
-	 * @param folders
-	 *            java.util.List Folder 要检查的文件夹列表
+	 * @param originalName java.lang.String 原始文件夹名
+	 * @param folders      java.util.List Folder 要检查的文件夹列表
 	 * @return java.lang.String 新文件夹名
 	 */
 	public static String getNewFolderName(String originalName, List<? extends Folder> folders) {
@@ -189,10 +191,8 @@ public class FileNodeUtil {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param folder
-	 *            kohgylw.kiftd.server.model.Folder 原始文件夹
-	 * @param parentfolder
-	 *            java.io.File 要检查的文件夹
+	 * @param folder       kohgylw.kiftd.server.model.Folder 原始文件夹
+	 * @param parentfolder java.io.File 要检查的文件夹
 	 * @return java.lang.String 新文件夹名
 	 */
 	public static String getNewFolderName(Folder folder, File parentfolder) {
@@ -217,10 +217,8 @@ public class FileNodeUtil {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param n
-	 *            kohgylw.kiftd.server.model.Node 要重命名的文件节点
-	 * @param folder
-	 *            java.io.File 要检查的本地文件夹
+	 * @param n      kohgylw.kiftd.server.model.Node 要重命名的文件节点
+	 * @param folder java.io.File 要检查的本地文件夹
 	 * @return java.lang.String 新文件名
 	 */
 	public static String getNewNodeName(Node n, File folder) {

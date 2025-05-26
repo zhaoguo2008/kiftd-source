@@ -2,6 +2,7 @@ package kohgylw.kiftd.ui.module;
 
 import java.awt.BorderLayout;
 import java.awt.Container;
+import java.awt.Desktop;
 import java.awt.Dimension;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.dnd.DnDConstants;
@@ -13,6 +14,7 @@ import java.awt.dnd.DropTargetListener;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseListener;
 import java.io.File;
+import java.io.IOException;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
@@ -29,10 +31,13 @@ import javax.swing.SwingUtilities;
 import javax.swing.event.ListSelectionEvent;
 import javax.swing.event.ListSelectionListener;
 
+import org.apache.commons.io.FileUtils;
+
 import kohgylw.kiftd.printer.Printer;
 import kohgylw.kiftd.server.exception.FilesTotalOutOfLimitException;
 import kohgylw.kiftd.server.exception.FoldersTotalOutOfLimitException;
-import kohgylw.kiftd.server.util.FileNodeUtil;
+import kohgylw.kiftd.server.model.Node;
+import kohgylw.kiftd.server.util.ConfigureReader;
 import kohgylw.kiftd.ui.util.FilesTable;
 import kohgylw.kiftd.util.file_system_manager.FileSystemManager;
 import kohgylw.kiftd.util.file_system_manager.pojo.Folder;
@@ -64,6 +69,8 @@ public class FSViewer extends KiftdDynamicWindow {
 	private static FolderView currentView;// 当前显示的视图
 	private static ExecutorService worker;// 操作线程池
 
+	private static String previewDirName = "preview";// 用于预览的文件导出文件夹名，该文件夹将被创建在文件系统目录内
+
 	// 资源加载
 	private FSViewer() throws SQLException {
 		setUIFont();
@@ -76,7 +83,6 @@ public class FSViewer extends KiftdDynamicWindow {
 		Container c = window.getContentPane();
 		JToolBar toolBar = new JToolBar();
 		toolBar.setFloatable(false);
-		// TODO 自动生成的 catch 块
 		homeBtn = new JButton("根目录[/Root]");
 		backToParentFolder = new JButton("上一级[^]");
 		importBtn = new JButton("导入[<-]");
@@ -106,27 +112,21 @@ public class FSViewer extends KiftdDynamicWindow {
 		// 各个工具栏按钮的功能实现
 		homeBtn.addActionListener((e) -> {
 			disableAllButtons();
-			worker.execute(() -> {
-				try {
-					getFolderView("root");
-				} catch (Exception e1) {
-					// TODO 自动生成的 catch 块
-					JOptionPane.showMessageDialog(window, "出现意外错误：无法读取文件列表，请重试或重启应用。", "错误", JOptionPane.ERROR_MESSAGE);
-				}
-				enableAllButtons();
-			});
+			try {
+				getFolderView("root");
+			} catch (Exception e1) {
+				JOptionPane.showMessageDialog(window, "出现意外错误：无法读取文件列表，请重试或重启应用。", "错误", JOptionPane.ERROR_MESSAGE);
+			}
+			enableAllButtons();
 		});
 		backToParentFolder.addActionListener((e) -> {
 			disableAllButtons();
-			worker.execute(() -> {
-				try {
-					getFolderView(currentView.getCurrent().getFolderParent());
-				} catch (Exception e1) {
-					// TODO 自动生成的 catch 块
-					JOptionPane.showMessageDialog(window, "出现意外错误：无法读取文件列表，请重试或重启应用。", "错误", JOptionPane.ERROR_MESSAGE);
-				}
-				enableAllButtons();
-			});
+			try {
+				getFolderView(currentView.getCurrent().getFolderParent());
+			} catch (Exception e1) {
+				JOptionPane.showMessageDialog(window, "出现意外错误：无法读取文件列表，请重试或重启应用。", "错误", JOptionPane.ERROR_MESSAGE);
+			}
+			enableAllButtons();
 		});
 		importBtn.addActionListener((e) -> {
 			disableAllButtons();
@@ -175,7 +175,7 @@ public class FSViewer extends KiftdDynamicWindow {
 						enableAllButtons();
 						return;
 					}
-					String type = null;
+					final String type;
 					if (exi > 0) {
 						switch (JOptionPane.showConfirmDialog(window,
 								"该路径存在" + exi + "个同名文件或文件夹，您希望覆盖它们么？（“是”覆盖，“否”保留两者，“取消”终止导入）", "导入",
@@ -193,20 +193,26 @@ public class FSViewer extends KiftdDynamicWindow {
 							enableAllButtons();
 							return;
 						}
+					} else {
+						type = null;
 					}
-					FSProgressDialog fsd = FSProgressDialog.getNewInstance();
-					Thread deleteListenerDialog = new Thread(() -> {
+					FSProgressDialog fsd = FSProgressDialog.getNewInstance(window);
+					Thread t = new Thread(() -> {
 						fsd.show();
 					});
-					deleteListenerDialog.start();
+					t.start();
 					try {
 						FileSystemManager.getInstance().exportTo(folders, nodes, path, type);
-						fsd.close();
+						SwingUtilities.invokeLater(() -> {
+							fsd.close();
+						});
 					} catch (Exception e1) {
-						// TODO 自动生成的 catch 块
-						fsd.close();
-						JOptionPane.showMessageDialog(window, "导出文件时失败，该操作已被中断，未能全部导出。", "错误",
-								JOptionPane.ERROR_MESSAGE);
+						SwingUtilities.invokeLater(() -> {
+							fsd.close();
+							Printer.instance.print(e1.toString());
+							JOptionPane.showMessageDialog(window, "导出文件时失败，该操作已被中断，未能全部导出。", "错误",
+									JOptionPane.ERROR_MESSAGE);
+						});
 					}
 					refresh();
 					enableAllButtons();
@@ -219,41 +225,37 @@ public class FSViewer extends KiftdDynamicWindow {
 					JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
 				int[] selected = filesTable.getSelectedRows();
 				worker.execute(() -> {
-					Runnable doDeleteThread = new Runnable() {
-						@Override
-						public void run() {
-							// TODO 自动生成的方法存根
-							List<String> selectedNodes = new ArrayList<>();
-							List<String> selectedFolders = new ArrayList<>();
-							int borderIndex = currentView.getFolders().size();
-							for (int i : selected) {
-								if (i < borderIndex) {
-									selectedFolders.add(currentView.getFolders().get(i).getFolderId());
-								} else {
-									selectedNodes.add(currentView.getFiles().get(i - borderIndex).getFileId());
-								}
-							}
-							FSProgressDialog fsd = FSProgressDialog.getNewInstance();
-							Thread fsProgressDialogThread = new Thread(() -> {
-								fsd.show();
-							});
-							fsProgressDialogThread.start();
-							try {
-								FileSystemManager.getInstance().delete(selectedFolders.toArray(new String[0]),
-										selectedNodes.toArray(new String[0]));
-								fsd.close();
-							} catch (Exception e1) {
-								// TODO 自动生成的 catch 块
-								fsd.close();
-								JOptionPane.showMessageDialog(window, "删除文件时失败，该操作已被中断，未能全部删除。", "错误",
-										JOptionPane.ERROR_MESSAGE);
-								refresh();
-							}
-							refresh();
-							enableAllButtons();
+					List<String> selectedNodes = new ArrayList<>();
+					List<String> selectedFolders = new ArrayList<>();
+					int borderIndex = currentView.getFolders().size();
+					for (int i : selected) {
+						if (i < borderIndex) {
+							selectedFolders.add(currentView.getFolders().get(i).getFolderId());
+						} else {
+							selectedNodes.add(currentView.getFiles().get(i - borderIndex).getFileId());
 						}
-					};
-					SwingUtilities.invokeLater(doDeleteThread);
+					}
+					FSProgressDialog fsd = FSProgressDialog.getNewInstance(window);
+					Thread t = new Thread(() -> {
+						fsd.show();
+					});
+					t.start();
+					try {
+						FileSystemManager.getInstance().delete(selectedFolders.toArray(new String[0]),
+								selectedNodes.toArray(new String[0]));
+						SwingUtilities.invokeLater(() -> {
+							fsd.close();
+						});
+					} catch (Exception e1) {
+						SwingUtilities.invokeLater(() -> {
+							fsd.close();
+							Printer.instance.print(e1.toString());
+							JOptionPane.showMessageDialog(window, "删除文件时失败，该操作已被中断，未能全部删除。", "错误",
+									JOptionPane.ERROR_MESSAGE);
+						});
+					}
+					refresh();
+					enableAllButtons();
 				});
 			} else {
 				enableAllButtons();
@@ -261,10 +263,8 @@ public class FSViewer extends KiftdDynamicWindow {
 		});
 		refreshBtn.addActionListener((e) -> {
 			disableAllButtons();
-			worker.execute(() -> {
-				refresh();
-				enableAllButtons();
-			});
+			refresh();
+			enableAllButtons();
 		});
 		// 生成文件列表
 		filesTable = new FilesTable();
@@ -274,7 +274,6 @@ public class FSViewer extends KiftdDynamicWindow {
 
 			@Override
 			public void valueChanged(ListSelectionEvent e) {
-				// TODO 自动生成的方法存根
 				if (filesTable.getSelectedRows().length > 0) {
 					exportBtn.setEnabled(true);
 					deleteBtn.setEnabled(true);
@@ -284,7 +283,7 @@ public class FSViewer extends KiftdDynamicWindow {
 				}
 			}
 		});
-		// 文件列表的双击监听（进入文件夹）
+		// 文件列表的双击监听（进入文件夹或快速预览文件）
 		filesTable.addMouseListener(new MouseListener() {
 			@Override
 			public void mouseReleased(MouseEvent e) {
@@ -304,33 +303,103 @@ public class FSViewer extends KiftdDynamicWindow {
 
 			@Override
 			public void mouseClicked(MouseEvent e) {
-				// TODO 自动生成的方法存根
 				disableAllButtons();
 				worker.execute(() -> {
-					Folder f = filesTable.getDoubleClickFolder(e);
-					if (f != null) {
-						try {
-							getFolderView(f.getFolderId());
-						} catch (Exception e1) {
-							// TODO 自动生成的 catch 块
+					Object i = filesTable.getDoubleClickItem(e);
+					if (i != null) {
+						if (i instanceof Folder) {
+							// 如果双击文件夹，则进入此文件夹
+							Folder f = (Folder) i;
+							try {
+								getFolderView(f.getFolderId());
+							} catch (Exception e1) {
+								Printer.instance.print(e.toString());
+							}
+						} else if (i instanceof Node) {
+							// 如果双击文件，则将文件导出并打开
+							if (Desktop.isDesktopSupported()) {
+								// 如果支持本地桌面操作，则继续
+								Node n = (Node) i;
+								// 为要预览的文件创建一个唯一的文件夹
+								String fsp = ConfigureReader.instance().getFileSystemPath();
+								File previewDir = new File(fsp, previewDirName);
+								if (previewDir.isDirectory() || previewDir.mkdir()) {
+									File previewFileDir = new File(previewDir, n.getFileId());
+									if (previewFileDir.isDirectory() || previewFileDir.mkdir()) {
+										// 如果有旧文件存留，则先清理
+										File pfOld = new File(previewFileDir, n.getFileName());
+										if (!pfOld.isFile() || pfOld.delete()) {
+											// 将要预览的文件导出至此文件夹内
+											FSProgressDialog fsd = FSProgressDialog.getNewInstance(window);
+											Thread t = new Thread(() -> {
+												fsd.show();
+											});
+											t.start();
+											try {
+												boolean exportSuccess = FileSystemManager.getInstance().exportTo(
+														new String[0], new String[] { n.getFileId() }, previewFileDir,
+														null);
+												SwingUtilities.invokeLater(() -> {
+													fsd.close();
+													if (exportSuccess) {
+														// 如果导出成功，将此文件设置为“只读”并以系统默认方式打开
+														File pf = new File(previewFileDir, n.getFileName());
+														if (pf.isFile() && pf.setReadOnly()) {
+															try {
+																Desktop.getDesktop().open(pf);
+																return;
+															} catch (IOException e1) {
+																Printer.instance.print(e1.toString());
+															}
+														}
+														JOptionPane.showMessageDialog(window, "无法预览此文件。", "错误",
+																JOptionPane.ERROR_MESSAGE);
+													} else {
+														JOptionPane.showMessageDialog(window, "导出预览缓存文件时失败，该操作已被中断。",
+																"错误", JOptionPane.ERROR_MESSAGE);
+													}
+												});
+											} catch (Exception e1) {
+												SwingUtilities.invokeLater(() -> {
+													fsd.close();
+													Printer.instance.print(e1.toString());
+													JOptionPane.showMessageDialog(window, "导出预览缓存文件时失败，无法预览此文件。", "错误",
+															JOptionPane.ERROR_MESSAGE);
+												});
+											}
+										} else {
+											JOptionPane.showMessageDialog(window, "缓存文件清理失败，无法预览此文件。", "错误",
+													JOptionPane.ERROR_MESSAGE);
+										}
+									} else {
+										JOptionPane.showMessageDialog(window, "预览缓存区创建失败，无法预览此文件。", "错误",
+												JOptionPane.ERROR_MESSAGE);
+									}
+								} else {
+									JOptionPane.showMessageDialog(window, "预览缓存区创建失败，无法预览此文件。", "错误",
+											JOptionPane.ERROR_MESSAGE);
+								}
+							} else {
+								JOptionPane.showMessageDialog(window, "系统不支持快速预览功能，无法预览此文件。", "错误",
+										JOptionPane.ERROR_MESSAGE);
+							}
 						}
+						// 如果双击的不是文件和文件夹，则不进行任何操作
 					}
 					enableAllButtons();
 				});
 			}
 		});
+
 		// 文件列表的拖拽监听
 		DropTargetListener dtl = new DropTargetListener() {
 
 			@Override
 			public void dropActionChanged(DropTargetDragEvent dtde) {
-				// TODO 自动生成的方法存根
-
 			}
 
 			@Override
 			public void drop(DropTargetDropEvent dtde) {
-				// TODO 自动生成的方法存根
 				if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
 					dtde.acceptDrop(DnDConstants.ACTION_COPY_OR_MOVE);
 					try {
@@ -344,43 +413,41 @@ public class FSViewer extends KiftdDynamicWindow {
 							enableAllButtons();
 						});
 					} catch (Exception e) {
-						// TODO 自动生成的 catch 块
-						worker.execute(() -> {
-							Runnable refreshThread = new Runnable() {
-								@Override
-								public void run() {
-									// TODO 自动生成的方法存根
-									refresh();
-								}
-
-							};
-							SwingUtilities.invokeLater(refreshThread);
-						});
+						Printer.instance.print(e.toString());
+						refresh();
 					}
 				}
 			}
 
 			@Override
 			public void dragOver(DropTargetDragEvent dtde) {
-				// TODO 自动生成的方法存根
-
 			}
 
 			@Override
 			public void dragExit(DropTargetEvent dte) {
-				// TODO 自动生成的方法存根
-
 			}
 
 			@Override
 			public void dragEnter(DropTargetDragEvent dtde) {
-				// TODO 自动生成的方法存根
-
 			}
 		};
 		window.setDropTarget(new DropTarget(window, DnDConstants.ACTION_COPY_OR_MOVE, dtl));
 		c.add(mianPane);
 		modifyComponentSize(window);
+
+		// 退出程序时清理预览文件夹
+		Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+			String fsp = ConfigureReader.instance().getFileSystemPath();
+			File previewDir = new File(fsp, previewDirName);
+			if (previewDir.isDirectory()) {
+				try {
+					FileUtils.deleteDirectory(previewDir);
+				} catch (IOException e1) {
+					Printer.instance.print(e1.toString());
+					Printer.instance.print("错误：预览缓存区[" + previewDir.getAbsolutePath() + "]清理失败，您可以在程序退出后手动清理此文件夹。");
+				}
+			}
+		}));
 	}
 
 	// 刷新文件列表
@@ -388,7 +455,6 @@ public class FSViewer extends KiftdDynamicWindow {
 		try {
 			getFolderView(currentView.getCurrent().getFolderId());
 		} catch (Exception e1) {
-			// TODO 自动生成的 catch 块
 			JOptionPane.showMessageDialog(window, "无法刷新文件列表，请重试或返回根目录。", "错误", JOptionPane.ERROR_MESSAGE);
 		}
 	}
@@ -405,7 +471,6 @@ public class FSViewer extends KiftdDynamicWindow {
 	 */
 	public void show() {
 		disableAllButtons();
-		FileNodeUtil.initNodeTableToDataBase();
 		try {
 			if (currentView == null) {
 				getFolderView("root");
@@ -415,7 +480,7 @@ public class FSViewer extends KiftdDynamicWindow {
 			enableAllButtons();
 			window.setVisible(true);
 		} catch (Exception e) {
-			// TODO 自动生成的 catch 块
+			Printer.instance.print(e.toString());
 			Printer.instance.print("错误：无法打开文件系统，该文件系统可能正在被另一个kiftd占用。");
 		}
 	}
@@ -466,12 +531,11 @@ public class FSViewer extends KiftdDynamicWindow {
 		try {
 			exi = FileSystemManager.getInstance().hasExistsFilesOrFolders(files, folderId);
 		} catch (SQLException e1) {
-			// TODO 自动生成的 catch 块
 			JOptionPane.showMessageDialog(window, "出现意外错误，无法导入文件，请刷新或重启应用后重试。", "错误", JOptionPane.ERROR_MESSAGE);
 			refresh();
 			return;
 		}
-		String type = null;
+		final String type;
 		if (exi > 0) {
 			switch (JOptionPane.showConfirmDialog(window, "该路径存在" + exi + "个同名文件或文件夹，您希望覆盖它们么？（“是”覆盖，“否”保留两者，“取消”终止导入）",
 					"导入", JOptionPane.YES_NO_CANCEL_OPTION)) {
@@ -487,13 +551,15 @@ public class FSViewer extends KiftdDynamicWindow {
 				type = "CANCEL";
 				return;
 			}
+		} else {
+			type = null;
 		}
 		// 打开进度提示会话框
-		FSProgressDialog fsd = FSProgressDialog.getNewInstance();
-		Thread fspt = new Thread(() -> {
+		FSProgressDialog fsd = FSProgressDialog.getNewInstance(window);
+		Thread t = new Thread(() -> {
 			fsd.show();
 		});
-		fspt.start();
+		t.start();
 		try {
 			FileSystemManager.getInstance().importFrom(files, folderId, type);
 		} catch (FoldersTotalOutOfLimitException e1) {
@@ -503,8 +569,10 @@ public class FSViewer extends KiftdDynamicWindow {
 		} catch (Exception e3) {
 			JOptionPane.showMessageDialog(window, "导入失败，无法完成导入，该操作已被中断。", "错误", JOptionPane.ERROR_MESSAGE);
 		}
-		fsd.close();
-		refresh();
+		SwingUtilities.invokeLater(() -> {
+			fsd.close();
+			refresh();
+		});
 	}
 
 	// 锁定全部按钮避免重复操作

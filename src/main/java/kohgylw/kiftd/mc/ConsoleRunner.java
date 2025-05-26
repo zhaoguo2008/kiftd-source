@@ -6,7 +6,9 @@ import kohgylw.kiftd.server.exception.FoldersTotalOutOfLimitException;
 import kohgylw.kiftd.server.model.Node;
 
 import java.io.File;
+import java.nio.file.FileAlreadyExistsException;
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Scanner;
@@ -44,7 +46,7 @@ public class ConsoleRunner {
 		ConsoleRunner.ctl = new KiftdCtl();
 		worker = Executors.newSingleThreadExecutor();
 		ConsoleRunner.commandTips = "kiftd:您可以输入以下指令以控制服务器：\r\n-start 启动服务器\r\n-stop 停止服务器\r\n-exit 停止服务器并退出应用\r\n-restart 重启服务器\r\n-files 文件管理\r\n-status 查看服务器状态\r\n-help 显示帮助文本";
-		ConsoleRunner.fsCommandTips = "kiftd files:您可以输入以下指令进行文件管理：\r\nls 显示当前文件夹内容\r\ncd {“文件夹名称” 或 “--文件夹序号”} 进入指定文件夹（示例：“cd foo” 或 “cd --1”，如需返回上一级请输入“cd ../”）\r\nimport {要导入的本地文件（必须使用完整路径）} 将本地文件或文件夹导入至此\r\nexport {“目标名称” 或 “--目标序号”（省略该项则导出当前文件夹的全部内容）} {要导出至本地的路径（必须使用完整路径）} 将指定文件或文件夹导出本地\r\nrm {“文件夹名称” 或 “--文件夹序号”} 删除指定文件或文件夹\r\nexit 退出文件管理并返回kiftd控制台\r\nhelp 显示帮助文本";
+		ConsoleRunner.fsCommandTips = "kiftd files:您可以输入以下指令进行文件管理：\r\nls 显示当前文件夹内容（可使用参数 “-l” 显示所有项目的详细信息）\r\ncd {“文件夹名称” 或 “--文件夹序号”} 进入指定文件夹（示例：“cd foo” 或 “cd --1”，如需返回上一级请输入“cd ../”）\r\nimport {要导入的本地文件（必须使用完整路径）} 将本地文件或文件夹导入至此\r\nexport {“目标名称” 或 “--目标序号”（省略该项则导出当前文件夹的全部内容）} {要导出至本地的路径（必须使用完整路径）} 将指定文件或文件夹导出本地\r\nrm {“目标名称” 或 “--目标序号”} 删除指定文件或文件夹\r\nexit 退出文件管理并返回kiftd控制台\r\nhelp 显示帮助文本";
 	}
 
 	/**
@@ -55,8 +57,7 @@ public class ConsoleRunner {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param args
-	 *            java.lang.String[] 启动参数
+	 * @param args java.lang.String[] 启动参数
 	 * @return kohgylw.kiftd.mc.ConsoleRunner 本启动器唯一实例
 	 */
 	public static ConsoleRunner build(final String[] args) {
@@ -78,6 +79,10 @@ public class ConsoleRunner {
 			}
 			case "-import": {
 				doImport(args);
+				break;
+			}
+			case "-transfer": {
+				doTransfer(args);
 				break;
 			}
 			case "-console": {
@@ -190,8 +195,10 @@ public class ConsoleRunner {
 			try {
 				while (true) {
 					Printer.instance.print("kiftd: console$ ");
-					String command = reader.nextLine();
+					String command = reader.nextLine().trim();
 					switch (command) {
+					case "":
+						break;
 					case "-start":
 						startServer();
 						break;
@@ -222,6 +229,7 @@ public class ConsoleRunner {
 					}
 				}
 			} catch (Exception e) {
+				Printer.instance.print(e.toString());
 				Printer.instance.print("错误：读取命令时出现意外导致程序退出，请重启kiftd。");
 			}
 		});
@@ -241,7 +249,6 @@ public class ConsoleRunner {
 	private void fileSystemManagerModel() {
 		Printer.instance.print("已进入文件管理功能。");
 		try {
-			FileNodeUtil.initNodeTableToDataBase();
 			if (currentFolder == null || currentFolder.getCurrent() == null || FileSystemManager.getInstance()
 					.selectFolderById(currentFolder.getCurrent().getFolderId()) == null) {
 				getFolderView("root");
@@ -254,7 +261,11 @@ public class ConsoleRunner {
 		try {
 			while (true) {
 				System.out.println("kiftd: " + currentFolder.getCurrent().getFolderName() + "$ ");
-				String command = reader.nextLine();
+				String command = reader.nextLine().trim();
+				// 若未输入任何命令，则直接跳过
+				if (command.length() == 0) {
+					continue;
+				}
 				// 针对一些带参数指令的操作
 				if (command.startsWith("cd ")) {
 					gotoFolder(command.substring(3));
@@ -272,11 +283,20 @@ public class ConsoleRunner {
 					doExport(command.substring(7));
 					continue;
 				}
+				if (command.startsWith("ls ") || command.equals("ls")) {
+					String[] oArgs = command.substring(2).trim().split(" ");
+					String[] args = Arrays.stream(oArgs).filter(s -> !s.isEmpty()).toArray(String[]::new);
+					if (args.length == 0) {
+						showCurrentFolder(false);
+					} else if (args.length == 1 && "-l".equals(args[0])) {
+						showCurrentFolder(true);
+					} else {
+						Printer.instance.print("错误：显示当前文件夹内容失败，输入参数不正确。");
+					}
+					continue;
+				}
 				// 针对一些不带参数指令的操作
 				switch (command) {
-				case "ls":
-					showCurrentFolder();
-					break;
 				case "exit":
 					Printer.instance.print("退出文件管理。");
 					return;
@@ -301,7 +321,7 @@ public class ConsoleRunner {
 	}
 
 	// 打印当前文件夹内容（ls）
-	private void showCurrentFolder() {
+	private void showCurrentFolder(boolean showDetailedInformation) {
 		try {
 			String folderId = currentFolder.getCurrent().getFolderId();
 			if (Math.max(FileSystemManager.getInstance().getFilesTotalNumByFoldersId(folderId),
@@ -316,19 +336,72 @@ public class ConsoleRunner {
 		List<Folder> fls = currentFolder.getFolders();
 		int index = 1;
 		for (Folder f : fls) {
-			System.out.println("--" + index + " [文件夹] " + f);
+			StringBuffer row = new StringBuffer();
+			row.append("--" + index);
+			row.append("\t");
+			row.append("[文件夹]");
+			row.append("\t");
+			row.append(f);
+			if (showDetailedInformation) {
+				row.append("\t");
+				row.append(f.getFolderCreationDate());
+				row.append("\t");
+				row.append("--");
+				row.append("\t");
+				row.append(f.getFolderCreator());
+			}
+			System.out.println(row.toString());
 			index++;
 		}
 		List<Node> fs = currentFolder.getFiles();
 		for (Node f : fs) {
-			System.out.println("--" + index + " [文件] " + f.getFileName());
+			StringBuffer row = new StringBuffer();
+			row.append("--" + index);
+			row.append("\t");
+			row.append("[文件]");
+			row.append("\t");
+			row.append(f.getFileName());
+			if (showDetailedInformation) {
+				row.append("\t");
+				row.append(f.getFileCreationDate());
+				row.append("\t");
+				row.append(formatFileSize(f.getFileSize()));
+				row.append("\t");
+				row.append(f.getFileCreator());
+			}
+			System.out.println(row.toString());
 			index++;
 		}
 		System.out.println();
 	}
 
+	// 将以Byte为单位表示的文件字符转换为以合适单位表示的字符串
+	private String formatFileSize(String value) {
+		double convertSize;
+		String unit;
+		long size = Long.parseLong((String) value);
+		if (size < 1024) {
+			convertSize = (double) size;
+			unit = "B";
+		} else if (size < 1048576L) {
+			convertSize = ((double) size / 1024.0);
+			unit = "KB";
+		} else if (size < 1073741824L) {
+			convertSize = ((double) size / 1048576.0);
+			unit = "MB";
+		} else if (size < 1099511627776L) {
+			convertSize = ((double) size / 1073741824.0);
+			unit = "GB";
+		} else {
+			convertSize = ((double) size / 1099511627776.0);
+			unit = "TB";
+		}
+		return String.format("%.1f", convertSize) + " " + unit;
+	}
+
 	// 进入某一文件夹，可以输入文件夹名或是前方编号（例如cd foo或是cd --1）
 	private void gotoFolder(String fname) {
+		fname = fname.trim();
 		try {
 			currentFolder = FileSystemManager.getInstance().getFolderView(currentFolder.getCurrent().getFolderId());
 			String fid = getSelectFolderId(fname);
@@ -380,8 +453,8 @@ public class ConsoleRunner {
 			return currentFolder.getCurrent().getFolderId();
 		}
 		if (fname.startsWith("--")) {
-			int index = Integer.parseInt(fname.substring(2));
 			try {
+				int index = Integer.parseInt(fname.substring(2));
 				if (index >= 1 && index <= currentFolder.getFolders().size()) {
 					return currentFolder.getFolders().get(index - 1).getFolderId();
 				}
@@ -412,8 +485,8 @@ public class ConsoleRunner {
 			return currentFolder.getCurrent().getFolderId();
 		}
 		if (fname.startsWith("--")) {
-			int index = Integer.parseInt(fname.substring(2));
 			try {
+				int index = Integer.parseInt(fname.substring(2));
 				if (index >= 1 && index <= currentFolder.getFolders().size()) {
 					return currentFolder.getFolders().get(index - 1).getFolderId();
 				} else {
@@ -441,7 +514,6 @@ public class ConsoleRunner {
 	private void doImport(String[] args) {
 		// 针对简化命令（只有1个参数），认为要将整个ROOT导出至某位置
 		try {
-			FileNodeUtil.initNodeTableToDataBase();
 			String importTarget;
 			String importPath;
 			Object path;
@@ -505,6 +577,7 @@ public class ConsoleRunner {
 
 	// 导入一个文件或文件夹
 	private void doImport(String fpath) {
+		fpath = fpath.trim();
 		File f = new File(fpath);
 		if (!f.exists()) {
 			Printer.instance.print("错误：无法导入文件或文件夹，该目标不存在（" + fpath + "），请重新检查。");
@@ -518,7 +591,7 @@ public class ConsoleRunner {
 			if (FileSystemManager.getInstance().hasExistsFilesOrFolders(importFiles, targetFolder) > 0) {
 				System.out.println("提示：该路径下已经存在同名文件或文件夹（" + f.getName() + "），您希望？[C]取消 [V]覆盖 [B]保留两者");
 				q: while (true) {
-					String command = reader.nextLine();
+					String command = reader.nextLine().trim();
 					switch (command) {
 					case "C":
 						Printer.instance.print("导入被取消。");
@@ -563,7 +636,6 @@ public class ConsoleRunner {
 	private void doExport(String[] args) {
 		// 针对简化命令（只有1个参数），认为要将整个ROOT导出至某位置
 		try {
-			FileNodeUtil.initNodeTableToDataBase();
 			String exportTarget;
 			String exportPath;
 			Object target;
@@ -628,7 +700,7 @@ public class ConsoleRunner {
 			if (FileSystemManager.getInstance().exportTo(foldersId, filesId, path, type)) {
 				return;
 			} else {
-				Printer.instance.print("错误：导出失败，可能导出全部文件。");
+				Printer.instance.print("错误：导出失败，可能未导出全部文件。");
 			}
 		} catch (Exception e1) {
 			Printer.instance.print("错误：导出失败，出现意外错误。");
@@ -637,7 +709,11 @@ public class ConsoleRunner {
 
 	// 导出一个文件或文件夹
 	private void doExport(String command) {
-		String[] args = command.split(" ");
+		command = command.trim();
+		// 将参数按照空格分隔
+		String[] oArgs = command.split(" ");
+		// 提取有效的参数（避免中间有多个空格）
+		String[] args = Arrays.stream(oArgs).filter(s -> !s.isEmpty()).toArray(String[]::new);
 		String id;
 		String path;
 		ProgressListener pl = null;
@@ -675,7 +751,7 @@ public class ConsoleRunner {
 				if (FileSystemManager.getInstance().hasExistsFilesOrFolders(foldersId, filesId, targetPath) > 0) {
 					System.out.println("提示：该路径下已经存在同名文件或文件夹（" + targetPath.getName() + "），您希望？[C]取消 [V]覆盖 [B]保留两者");
 					q: while (true) {
-						String command2 = reader.nextLine();
+						String command2 = reader.nextLine().trim();
 						switch (command2) {
 						case "C":
 							Printer.instance.print("导出被取消。");
@@ -709,8 +785,43 @@ public class ConsoleRunner {
 		}
 	}
 
+	// 移出指定存储区的数据至指定文件夹内
+	private void doTransfer(String[] args) {
+		short extendStoreIndex;
+		File reservePath;
+		if (args.length == 3) {
+			try {
+				extendStoreIndex = Short.parseShort(args[1]);
+				reservePath = new File(args[2]);
+				if (!reservePath.isDirectory()) {
+					Printer.instance.print("错误：移出数据的保存路径（" + args[2] + "）必须指向一个已经存在的文件夹。");
+					return;
+				}
+				try {
+					long total = FileSystemManager.getInstance().getTotalOfNodesAtExtendStore(extendStoreIndex);
+					if (total > 0) {
+						FileSystemManager.getInstance().transferExtendStore(extendStoreIndex, reservePath);
+						return;
+					} else {
+						Printer.instance.print("错误：该扩展存储区（" + args[1] + "）不存在或其内部尚无任何数据，无需执行该操作。");
+						return;
+					}
+				} catch (FileAlreadyExistsException e1) {
+					Printer.instance.print("错误：目标文件夹内存在同名文件，建议选择一个空文件夹作为移出数据的保存路径。");
+				} catch (Exception e2) {
+					Printer.instance.print("错误：无法移出该扩展存储区内的数据，请重试。");
+				}
+			} catch (NumberFormatException e) {
+				Printer.instance.print("错误：扩展存储区编号（" + args[1] + "）无法被识别。");
+			}
+		} else {
+			Printer.instance.print("错误：移出失败，必须指定要移出的扩展存储区编号和移出数据的保存路径（示例：“-transfer 1 /home/your/transfer/folder”）。");
+		}
+	}
+
 	// 删除某一文件或文件夹
 	private void doDelete(String fname) {
+		fname = fname.trim();
 		ProgressListener pl = null;
 		try {
 			currentFolder = FileSystemManager.getInstance().getFolderView(currentFolder.getCurrent().getFolderId());
@@ -766,7 +877,7 @@ public class ConsoleRunner {
 		System.out.println("提示：" + tip + " [Y/N]");
 		while (true) {
 			System.out.print("> ");
-			String command = reader.nextLine();
+			String command = reader.nextLine().trim();
 			switch (command) {
 			case "Y":
 				return true;
@@ -807,7 +918,7 @@ public class ConsoleRunner {
 		Printer.instance.print("错误：无法读取指定文件夹，是否返回根目录？[Y/N]");
 		while (true) {
 			System.out.print("> ");
-			String command = reader.nextLine();
+			String command = reader.nextLine().trim();
 			switch (command) {
 			case "Y":
 				try {

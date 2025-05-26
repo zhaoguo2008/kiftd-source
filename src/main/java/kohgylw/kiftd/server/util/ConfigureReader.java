@@ -84,6 +84,9 @@ public class ConfigureReader {
 	public static final int INVALID_FILE_CHAIN_SETTING = 12;
 	public static final int INVALID_IP_XFF_SETTING = 13;
 	public static final int INVALID_FFMPEG_SETTING = 14;
+	public static final int INVALID_MUST_LOGIN_SETTING = 15;
+	public static final int INVALID_WEBDAV_SETTING = 16;
+	public static final int INVALID_RECYCLE_BIN_PATH = 17;
 	public static final int LEGAL_PROPERTIES = 0;
 	private static Thread accountPropertiesUpdateDaemonThread;
 	private String timeZone;
@@ -98,9 +101,12 @@ public class ConfigureReader {
 	private boolean ipXFFAnalysis = true;// 是否启用XFF解析
 	private boolean enableFFMPEG = true;// 是否启用视频播放的在线解码功能
 	private boolean enableDownloadByZip = true;// 是否启用“打包下载”功能
+	private boolean enableWebDAV = true;// 是否启用WebDAV功能
+	private String recycleBinPath;// 删除留档路径
 
 	private static final int MAX_EXTENDSTORES_NUM = 255;// 扩展存储区最大数目
-	private static final String[] SYS_ACCOUNTS = { "SYS_IN", "Anonymous", "匿名用户" };// 一些系统的特殊账户
+	private final static String DEFAULT_IMPORT_ACCOUNT = "SYS_IN";// 默认的导入账户
+	private static final String[] SYS_ACCOUNTS = { DEFAULT_IMPORT_ACCOUNT, "Anonymous", "匿名用户" };// 一些系统的特殊账户
 
 	private ConfigureReader() {
 		this.propertiesStatus = -1;
@@ -166,6 +172,10 @@ public class ConfigureReader {
 				return true;
 			}
 		}
+		// 被设置为导入账户的值也直接认为已经存在（理由同上）
+		if (getImportAccount().equals(account)) {
+			return true;
+		}
 		final String accountPwd = this.accountp.getProperty(account + ".pwd");
 		return accountPwd != null && accountPwd.length() > 0;
 	}
@@ -183,16 +193,16 @@ public class ConfigureReader {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param account
-	 *            java.lang.String 账户的ID，如果是匿名访问可传入null
-	 * @param auth
-	 *            kohgylw.kiftd.server.enumeration.AccountAuth
-	 *            要判断的操作类型，使用枚举类中定义的各种操作作为参数传入
-	 * @param folders
-	 *            该操作所发生的文件夹序列，其中应包含该操作对应的文件夹和其所有上级文件夹的ID
+	 * @param account java.lang.String 账户的ID，如果是匿名访问可传入null
+	 * @param auth    kohgylw.kiftd.server.enumeration.AccountAuth
+	 *                要判断的操作类型，使用枚举类中定义的各种操作作为参数传入
+	 * @param folders 该操作所发生的文件夹序列，其中应包含该操作对应的文件夹和其所有上级文件夹的ID
 	 * @return boolean 是否具备该操作的权限，若具备返回true，否则返回false
 	 */
 	public boolean authorized(final String account, final AccountAuth auth, List<String> folders) {
+		if (hasSuperAuth(account)) {
+			return true;// 对于具备超级权限的账户，判定其在任何文件夹内具备任何权限
+		}
 		if (account != null && account.length() > 0) {
 			final StringBuffer auths = new StringBuffer();
 			for (String id : folders) {
@@ -560,10 +570,16 @@ public class ConfigureReader {
 	 */
 	private int testServerPropertiesAndEffect() {
 		Printer.instance.print("正在检查服务器配置...");
-		this.mustLogin = this.serverp.getProperty("mustLogin");
-		if (this.mustLogin == null) {
+		final String pMustLogin = this.serverp.getProperty("mustLogin");
+		if (pMustLogin == null) {
 			Printer.instance.print("警告：未找到是否必须登录配置，将采用默认值（O）。");
 			this.mustLogin = "O";
+		} else {
+			if (!"N".equals(pMustLogin) && !"O".equals(pMustLogin)) {
+				Printer.instance.print("错误：必须登入功能配置不正确（只能设置为“O”或“N”），请重新检查。");
+				return INVALID_MUST_LOGIN_SETTING;
+			}
+			this.mustLogin = pMustLogin;
 		}
 		final String ports = this.serverp.getProperty("port");
 		if (ports == null) {
@@ -574,11 +590,11 @@ public class ConfigureReader {
 				this.port = Integer.parseInt(ports);
 				if (this.port <= 0 || this.port > 65535) {
 					Printer.instance.print("错误：端口号配置不正确，必须使用1-65535之间的整数。");
-					return 1;
+					return INVALID_PORT;
 				}
 			} catch (Exception e) {
 				Printer.instance.print("错误：端口号配置不正确，必须使用1-65535之间的整数。");
-				return 1;
+				return INVALID_PORT;
 			}
 		}
 		final String logs = this.serverp.getProperty("log");
@@ -587,7 +603,8 @@ public class ConfigureReader {
 			this.log = "E";
 		} else {
 			if (!logs.equals("N") && !logs.equals("R") && !logs.equals("E")) {
-				return 2;
+				Printer.instance.print("错误：日志等级配置不正确（只能设置为“N”、“R”或“E”），请重新检查。");
+				return INVALID_LOG;
 			}
 			this.log = logs;
 		}
@@ -603,7 +620,7 @@ public class ConfigureReader {
 				this.vc = vcl;
 				break;
 			default:
-				Printer.instance.print("错误：登录验证码配置无效。");
+				Printer.instance.print("错误：登录验证码配置不正确（只能设置为“STANDARD”、“SIMP”或“CLOSE”），请重新检查。");
 				return INVALID_VC;
 			}
 		}
@@ -621,7 +638,7 @@ public class ConfigureReader {
 				this.allowChangePassword = false;
 				break;
 			default:
-				Printer.instance.print("错误：用户修改密码功能设置无效。");
+				Printer.instance.print("错误：用户修改账户密码功能配置不正确（只能设置为“Y”或“N”），请重新检查。");
 				return INVALID_CHANGE_PASSWORD_SETTING;
 			}
 		}
@@ -639,7 +656,7 @@ public class ConfigureReader {
 				this.openFileChain = false;
 				break;
 			default:
-				Printer.instance.print("错误：永久资源链接功能设置无效。");
+				Printer.instance.print("错误：永久资源链接功能配置不正确（只能设置为“OPEN”或“CLOSE”），请重新检查。");
 				return INVALID_FILE_CHAIN_SETTING;
 			}
 		}
@@ -653,11 +670,11 @@ public class ConfigureReader {
 				this.bufferSize = Integer.parseInt(bufferSizes);
 				if (this.bufferSize <= 0) {
 					Printer.instance.print("错误：缓冲区大小设置无效。");
-					return 4;
+					return INVALID_BUFFER_SIZE;
 				}
 			} catch (Exception e2) {
 				Printer.instance.print("错误：缓冲区大小设置无效。");
-				return 4;
+				return INVALID_BUFFER_SIZE;
 			}
 		}
 		// 加载主文件系统路径配置
@@ -686,12 +703,12 @@ public class ConfigureReader {
 		final File fsFile = new File(this.fileSystemPath);
 		if (!fsFile.isDirectory() || !fsFile.canRead() || !fsFile.canWrite()) {
 			Printer.instance.print("错误：文件系统路径[" + this.fileSystemPath + "]无效，该路径必须指向一个具备读写权限的文件夹。");
-			return 3;
+			return INVALID_FILE_SYSTEM_PATH;
 		}
 		for (ExtendStores es : extendStores) {
 			if (!es.getPath().isDirectory() || !es.getPath().canRead() || !es.getPath().canWrite()) {
 				Printer.instance.print("错误：扩展存储区路径[" + es.getPath().getAbsolutePath() + "]无效，该路径必须指向一个具备读写权限的文件夹。");
-				return 3;
+				return INVALID_FILE_SYSTEM_PATH;
 			}
 		}
 		for (int i = 0; i < extendStores.size() - 1; i++) {
@@ -699,7 +716,7 @@ public class ConfigureReader {
 				if (extendStores.get(i).getPath().equals(extendStores.get(j).getPath())) {
 					Printer.instance.print(
 							"错误：扩展存储区路径[" + extendStores.get(j).getPath().getAbsolutePath() + "]无效，该路径已被其他扩展存储区占用。");
-					return 3;
+					return INVALID_FILE_SYSTEM_PATH;
 				}
 			}
 		}
@@ -707,27 +724,26 @@ public class ConfigureReader {
 		final File fbFile = new File(this.fileBlockPath);
 		if (!fbFile.isDirectory() && !fbFile.mkdirs()) {
 			Printer.instance.print("错误：无法创建文件块存放区[" + this.fileBlockPath + "]。");
-			return 5;
+			return CANT_CREATE_FILE_BLOCK_PATH;
 		}
 		this.fileNodePath = this.fileSystemPath + "filenodes" + File.separator;
 		final File fnFile = new File(this.fileNodePath);
 		if (!fnFile.isDirectory() && !fnFile.mkdirs()) {
 			Printer.instance.print("错误：无法创建文件节点存放区[" + this.fileNodePath + "]。");
-			return 6;
+			return CANT_CREATE_FILE_NODE_PATH;
 		}
 		this.TFPath = this.fileSystemPath + "temporaryfiles" + File.separator;
-		final File tfFile = new File(this.TFPath);
-		if (!tfFile.isDirectory() && !tfFile.mkdirs()) {
+		final File tpFile = new File(TFPath);
+		if (!tpFile.isDirectory() && !tpFile.mkdirs()) {
 			Printer.instance.print("错误：无法创建临时文件存放区[" + this.TFPath + "]。");
-			return 7;
+			return CANT_CREATE_TF_PATH;
 		}
-
 		if ("true".equals(serverp.getProperty("mysql.enable"))) {
 			dbDriver = "com.mysql.cj.jdbc.Driver";
 			String url = serverp.getProperty("mysql.url", "127.0.0.1/kift");
 			if (url.indexOf("/") <= 0 || url.substring(url.indexOf("/")).length() == 1) {
 				Printer.instance.print("错误：自定义数据库的URL中必须指定数据库名称。");
-				return 8;
+				return CANT_CONNECT_DB;
 			}
 			dbURL = "jdbc:mysql://" + url + "?useUnicode=true&characterEncoding=utf8";
 			dbUser = serverp.getProperty("mysql.user", "root");
@@ -743,48 +759,54 @@ public class ConfigureReader {
 			} catch (Exception e) {
 				Printer.instance.print(
 						"错误：无法连接至自定义数据库：" + dbURL + "（user=" + dbUser + ",password=" + dbPwd + "），请确重新配置MySQL数据库相关项。");
-				return 8;
+				return CANT_CONNECT_DB;
 			}
 		} else {
 			dbDriver = "org.h2.Driver";
-			dbURL = "jdbc:h2:file:" + fileNodePath + File.separator + "kift";
+			dbURL = "jdbc:h2:file:" + fileNodePath + "kift";
 			dbUser = "root";
 			dbPwd = "301537gY";
 		}
 		// https支持检查及生效处理
-		if ("true".equals(serverp.getProperty("https.enable"))) {
-			File keyFile = new File(path, "https.p12");
-			if (keyFile.isFile()) {
-				httpsKeyType = "PKCS12";
-			} else {
-				keyFile = new File(path, "https.jks");
+		String enableHttps = serverp.getProperty("https.enable");
+		if (enableHttps != null) {
+			if ("true".equals(enableHttps)) {
+				File keyFile = new File(path, "https.p12");
 				if (keyFile.isFile()) {
-					httpsKeyType = "JKS";
+					httpsKeyType = "PKCS12";
 				} else {
-					Printer.instance.print(
-							"错误：无法启用https支持，因为kiftd未能找到https证书文件。您必须在应用主目录内放置PKCS12（必须命名为https.p12）或JKS（必须命名为https.jks）证书。");
-					return HTTPS_SETTING_ERROR;
+					keyFile = new File(path, "https.jks");
+					if (keyFile.isFile()) {
+						httpsKeyType = "JKS";
+					} else {
+						Printer.instance.print(
+								"错误：无法启用https支持，因为kiftd未能找到https证书文件。您必须在应用主目录内放置PKCS12（必须命名为https.p12）或JKS（必须命名为https.jks）证书。");
+						return HTTPS_SETTING_ERROR;
+					}
 				}
-			}
-			httpsKeyFile = keyFile.getAbsolutePath();
-			httpsKeyPass = serverp.getProperty("https.keypass", "");
-			String httpsports = serverp.getProperty("https.port");
-			if (httpsports == null) {
-				Printer.instance.print("警告：未找到https端口配置，将采用默认值（443）。");
-				httpsPort = 443;
-			} else {
-				try {
-					this.httpsPort = Integer.parseInt(httpsports);
-					if (httpsPort <= 0 || httpsPort > 65535) {
+				httpsKeyFile = keyFile.getAbsolutePath();
+				httpsKeyPass = serverp.getProperty("https.keypass", "");
+				String httpsports = serverp.getProperty("https.port");
+				if (httpsports == null) {
+					Printer.instance.print("警告：未找到https端口配置，将采用默认值（443）。");
+					httpsPort = 443;
+				} else {
+					try {
+						this.httpsPort = Integer.parseInt(httpsports);
+						if (httpsPort <= 0 || httpsPort > 65535) {
+							Printer.instance.print("错误：无法启用https支持，https访问端口号配置不正确。");
+							return HTTPS_SETTING_ERROR;
+						}
+					} catch (Exception e) {
 						Printer.instance.print("错误：无法启用https支持，https访问端口号配置不正确。");
 						return HTTPS_SETTING_ERROR;
 					}
-				} catch (Exception e) {
-					Printer.instance.print("错误：无法启用https支持，https访问端口号配置不正确。");
-					return HTTPS_SETTING_ERROR;
 				}
+				openHttps = true;
+			} else if (!"false".equals(enableHttps)) {
+				Printer.instance.print("错误：https支持功能的启用项配置不正确（只能设置为“true”或“false”），请重新检查。");
+				return HTTPS_SETTING_ERROR;
 			}
-			openHttps = true;
 		}
 		// 是否启用XFF解析
 		String xffConf = serverp.getProperty("IP.xff");
@@ -837,8 +859,42 @@ public class ConfigureReader {
 		} else {
 			enableDownloadByZip = true;
 		}
+		// 是否启用WebDAV功能
+		String webdavConf = serverp.getProperty("webdav");
+		if (webdavConf != null) {
+			switch (webdavConf) {
+			case "disable":
+				enableWebDAV = false;
+				break;
+			case "enable":
+				enableWebDAV = true;
+				break;
+			default:
+				Printer.instance.print("错误：WebDAV功能的配置不正确（只能设置为“disable”或“enable”），请重新检查。");
+				return INVALID_WEBDAV_SETTING;
+			}
+		} else {
+			enableWebDAV = true;
+		}
+		// 检查是否设置了删除留档的路径
+		String recycleBinPathProp = this.serverp.getProperty("recyclebin");
+		if (recycleBinPathProp != null && !recycleBinPathProp.isEmpty()) {
+			// 如果有，认为启用了“删除留档”功能
+			recycleBinPathProp = recycleBinPathProp.replaceAll("\\\\:", ":").replaceAll("\\\\\\\\", "\\\\");
+			if (!recycleBinPathProp.endsWith(File.separator)) {
+				recycleBinPathProp = recycleBinPathProp + File.separator;
+			}
+			// 检查该路径是否指向一个可读写的文件夹
+			File recycleBin = new File(recycleBinPathProp);
+			if (!recycleBin.isDirectory() || !recycleBin.canWrite() || !recycleBin.canRead()) {
+				Printer.instance.print("错误：删除留档功能的配置不正确，必须是一个可读写的文件夹。");
+				return INVALID_RECYCLE_BIN_PATH;
+			}
+			// 检查完毕，将其规范为绝对路径
+			this.recycleBinPath = recycleBin.getAbsolutePath();
+		}
 		Printer.instance.print("检查完毕。");
-		return 0;
+		return LEGAL_PROPERTIES;
 	}
 
 	public void createDefaultServerPropertiesFile() {
@@ -962,22 +1018,25 @@ public class ConfigureReader {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param f
-	 *            Folder 要访问的文件夹对象
-	 * @param account
-	 *            String 要访问的账户
+	 * @param f       Folder 要访问的文件夹对象
+	 * @param account String 要访问的账户
 	 * @return boolean true允许访问，false不允许访问
 	 */
 	public boolean accessFolder(Folder f, String account) {
 		if (f == null) {
 			return false;// 访问不存在的文件夹肯定是没权限
 		}
+		if (hasSuperAuth(account)) {
+			return true;// 如果账户具备超级权限，则可无视访问级别对任意文件夹进行访问
+		}
+		// 否则，根据文件夹访问级别判定该账户是否具备访问权限
 		int cl = f.getFolderConstraint();
 		if (cl == 0) {
-			return true;
+			return true;// 若是“公开的”（0）文件夹，任何账户均可访问
 		} else {
 			if (account != null) {
 				if (cl == 1) {
+					// 若是“仅小组”（1）文件夹，只允许创建者和同组账户访问
 					if (f.getFolderCreator().equals(account)) {
 						return true;
 					}
@@ -999,12 +1058,13 @@ public class ConfigureReader {
 					}
 				}
 				if (cl == 2) {
+					// 若是“仅创建者”（2）文件夹，只允许创建者访问
 					if (f.getFolderCreator().equals(account)) {
 						return true;
 					}
 				}
 			}
-			return false;
+			return false;// 除了“公开的”文件夹外，匿名账户均无法访问
 		}
 	}
 
@@ -1094,8 +1154,7 @@ public class ConfigureReader {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param account
-	 *            java.lang.String 需要检查的账户名
+	 * @param account java.lang.String 需要检查的账户名
 	 * @return long 以byte为单位的最大阈值，若返回0则设置错误，若小于0则不限制。
 	 */
 	public long getUploadFileSize(String account) {
@@ -1128,8 +1187,7 @@ public class ConfigureReader {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param in
-	 *            java.lang.String 要转换的字符串内容，格式应为“{数值}{存储单位（可选）}”，例如“1024KB”或“10mb”。
+	 * @param in java.lang.String 要转换的字符串内容，格式应为“{数值}{存储单位（可选）}”，例如“1024KB”或“10mb”。
 	 * @return long 以Byte为单位计算的体积值，若为0则代表设置错误，若为负数则代表无限制
 	 */
 	private long getMaxSizeByString(String in) {
@@ -1179,9 +1237,8 @@ public class ConfigureReader {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param account
-	 *            java.lang.String 需要获取限制的账户名
-	 * @return long 最大下载速度限制，以KB/s为单位
+	 * @param account java.lang.String 需要获取限制的账户名
+	 * @return long 最大下载速度限制，以B/s为单位
 	 */
 	public long getDownloadMaxRate(String account) {
 		String defaultMaxRateP = accountp.getProperty("defaultMaxRate");
@@ -1197,7 +1254,7 @@ public class ConfigureReader {
 	 * 
 	 * <h2>下载限速设置值转化方法</h2>
 	 * <p>
-	 * 该方法用于将配置文件中的下载速度限制设置值转化为long类型的数值，例如当输入字符串“1”时，输出1，输入“2MB”时，输出2048。
+	 * 该方法用于将配置文件中的下载速度限制设置值转化为long类型的数值，例如当输入字符串“1”时，输出1024，输入“2MB”时，输出2097152。
 	 * </p>
 	 * <p>
 	 * 输入字符串格式规则：{数值}{速率单位（可选）}。其中，速率单位可使用下列字符串之一指代（不区分大小写）：
@@ -1211,9 +1268,8 @@ public class ConfigureReader {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param in
-	 *            java.lang.String 要转换的字符串内容，格式应为“{数值}{速率单位（可选）}”，例如“1024”或“10 mb”。
-	 * @return long 以KB/s为单位计算的下载速度，若为0则代表设置错误，若为负数则代表无限制
+	 * @param in java.lang.String 要转换的字符串内容，格式应为“{数值}{速率单位（可选）}”，例如“1024”或“10 mb”。
+	 * @return long 以B/s为单位计算的下载速度，若为0则代表设置错误，若为负数则代表无限制
 	 */
 	private long getMaxRateByString(String in) {
 		long r = 0L;
@@ -1233,18 +1289,21 @@ public class ConfigureReader {
 					}
 				}
 				switch (unit) {
-				case "m":
+				case "k":
 					r = Integer.parseInt(value) * 1024L;
 					break;
-				case "g":
+				case "m":
 					r = Integer.parseInt(value) * 1048576L;
 					break;
+				case "g":
+					r = Integer.parseInt(value) * 1073741824L;
+					break;
 				default:
-					r = Integer.parseInt(in.trim());
+					r = Integer.parseInt(in.trim()) * 1024L;
 					break;
 				}
 			} else {
-				r = Integer.parseInt(in.trim());
+				r = Integer.parseInt(in.trim()) * 1024L;
 			}
 		} catch (Exception e) {
 		}
@@ -1340,10 +1399,8 @@ public class ConfigureReader {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param account
-	 *            java.lang.String 账户ID，该账户必须已经存在，否则会导致修改失败
-	 * @param newPassword
-	 *            java.lang.String 新密码，必须不为null，否则会导致修改失败
+	 * @param account     java.lang.String 账户ID，该账户必须已经存在，否则会导致修改失败
+	 * @param newPassword java.lang.String 新密码，必须不为null，否则会导致修改失败
 	 * @return boolean 操作是否成功，成功则返回true
 	 */
 	public boolean changePassword(String account, String newPassword) throws Exception {
@@ -1372,8 +1429,7 @@ public class ConfigureReader {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param ipAddr
-	 *            java.lang.String 要判断的IP地址
+	 * @param ipAddr java.lang.String 要判断的IP地址
 	 * @return boolean 该地址是否被禁用，被禁用则返回true
 	 */
 	public boolean filterAccessIP(String ipAddr) {
@@ -1437,13 +1493,10 @@ public class ConfigureReader {
 	 * </p>
 	 * 
 	 * @author 青阳龙野(kohgylw)
-	 * @param newAccount
-	 *            java.lang.String 要写入的新账户名
-	 * @param newPassword
-	 *            java.lang.String 新账户的密码
+	 * @param newAccount  java.lang.String 要写入的新账户名
+	 * @param newPassword java.lang.String 新账户的密码
 	 * @return boolean 是否写入成功。仅当账户名不存在且写入成功时返回true，否则返回false
-	 * @throws Exception
-	 *             写入时发生的异常
+	 * @throws Exception 写入时发生的异常
 	 */
 	public boolean createNewAccount(String newAccount, String newPassword) throws Exception {
 		if (newAccount != null && newPassword != null) {
@@ -1524,4 +1577,77 @@ public class ConfigureReader {
 	public boolean isEnableDownloadByZip() {
 		return enableDownloadByZip;
 	}
+
+	/**
+	 * 
+	 * <h2>判断用户是否启用了WebDAV功能</h2>
+	 * <p>
+	 * 判断用户是否启用了WebDAV功能。
+	 * </p>
+	 * 
+	 * @author 青阳龙野(kohgylw)
+	 * @return boolean 启用则返回true，否则返回false
+	 */
+	public boolean isEnableWebDAV() {
+		return enableWebDAV;
+	}
+
+	/**
+	 * 
+	 * <h2>获取删除留档路径</h2>
+	 * <p>
+	 * 该方法返回删除留档路径（绝对路径），用以将删除的文件归档至该文件夹内。
+	 * </p>
+	 * 
+	 * @author 青阳龙野(kohgylw)
+	 * @return java.lang.String 归档文件夹的绝对路径。如果未启用此功能则返回null
+	 */
+	public String getRecycleBinPath() {
+		return recycleBinPath;
+	}
+
+	/**
+	 * 
+	 * <h2>判断某一账户是否具备超级权限</h2>
+	 * <p>
+	 * 该方法用于判断某一账户是否具备超级权限，该权限在账户配置文件中由“{账户名}.privilege=S”指定。
+	 * </p>
+	 * 
+	 * @param account 要检查的账户名，例如“admin”。
+	 * @author 青阳龙野(kohgylw)
+	 * @version 1.0
+	 * @return boolean 该账户若具备超级权限则返回true，否则返回false。若账户名为null也返回false。
+	 *
+	 */
+	private boolean hasSuperAuth(String account) {
+		if (account != null) {
+			if ("S".equals(accountp.getProperty(account + ".privilege"))) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * 
+	 * <h2>获取导入账户名</h2>
+	 * <p>
+	 * 该方法用于获取在“文件”功能中执行导入操作时，应为导入内容设置的账户名称。
+	 * 该项目由账户配置文件中的“import.account”项设置，例如“import.account=admin”。
+	 * </p>
+	 * 
+	 * @author 青阳龙野(kohgylw)
+	 * @version 1.0
+	 * @return String 账户配置文件中设置的导入账户名，若无此设置或此项设置的值为空则返回默认值“SYS_IN”。
+	 *
+	 */
+	public String getImportAccount() {
+		String importAccount = accountp.getProperty("import.account");
+		if (importAccount != null && importAccount.length() > 0) {
+			return importAccount;
+		} else {
+			return DEFAULT_IMPORT_ACCOUNT;
+		}
+	}
+
 }
